@@ -1,0 +1,91 @@
+# BLOQUE 1: Vocales Puras (001-005)
+# Capturar transiciones V-V
+a_a_i_a_u_e_o
+e_e_i_e_u_a_o
+i_i_a_i_e_o_u
+o_o_a_o_e_i_u
+u_u_a_u_e_o_i
+
+# BLOQUE 2: Consonantes Básicas (006-024)
+# Sonidos iniciales y codas simples
+# B, CH, D, F, G, J, K, L, LL, M, N, Ñ, P, R, RR, S, T, Y, Z
+ba_be_bi_bo_bu_ba_b
+cha_che_chi_cho_chu_cha_ch
+da_de_di_do_du_da_d
+fa_fe_fi_fo_fu_fa_f
+ga_ge_gi_go_gu_ga_g
+ja_je_ji_jo_ju_ja_j
+ka_ke_ki_ko_ku_ka_k
+la_le_li_lo_lu_la_l
+lla_lle_lli_llo_llu_lla_ll
+ma_me_mi_mo_mu_ma_m
+na_ne_ni_no_nu_na_n
+ña_ñe_ñi_ño_ñu_ña_ñ
+pa_pe_pi_po_pu_pa_p
+ra_re_ri_ro_ru_ra_r
+rra_rre_rri_rro_rru_rra_rr
+sa_se_si_so_su_sa_s
+ta_te_ti_to_tu_ta_t
+ya_ye_yi_yo_yu_ya_y
+za_ze_zi_zo_zu_za_z
+
+# BLOQUE 3: Grupos Consonánticos "L" (025-030)
+# Consonante + L
+bla_ble_bli_blo_blu_bla_bla
+cla_cle_cli_clo_clu_cla_cla
+fla_fle_fli_flo_flu_fla_fla
+gla_gle_gli_glo_glu_gla_gla
+pla_ple_pli_plo_plu_pla_pla
+tla_tle_tli_tlo_tlu_tla_tla
+
+# BLOQUE 4: Grupos Consonánticos "R" (031-037)
+# Consonante + R
+bra_bre_bri_bro_bru_bra_bra
+cra_cre_cri_cro_cru_cra_cra
+dra_dre_dri_dro_dru_dra_dra
+fra_fre_fri_fro_fru_fra_fra
+gra_gre_gri_gro_gru_gra_gra
+pra_pre_pri_pro_pru_pra_pra
+tra_tre_tri_tro_tru_tra_tra
+
+# BLOQUE 5: Palatalización "Y" (038-052)
+# Diptongos con I/Y
+bya_bye_byo_byu_bya_bya
+chya_chye_chyo_chyu_chya_chya
+dya_dye_dyo_dyu_dya_dya
+fya_fye_fyo_fyu_fya_fya
+gya_gye_gyo_gyu_gya_gya
+jya_jye_jyo_jyu_jya_jya
+kya_kye_kyo_kyu_kya_kya
+lya_lye_lyo_lyu_lya_lya
+mya_mye_myo_myu_mya_mya
+nya_nye_nyo_nyu_nya_nya
+pya_pye_pyo_pyu_pya_pya
+rya_rye_ryo_ryu_rya_rya
+sya_sye_syo_syu_sya_sya
+tya_tye_tyo_tyu_tya_tya
+zya_zye_zyo_zyu_zya_zya
+
+# BLOQUE 6: Respiraciones (053-054)
+# Inhalación y Exhalación
+a_R_i_R_u_R_e_R
+o_R_a_R_i_R_o_R
+
+# BLOQUE 7: Labialización "W" (055-070)
+# Diptongos con U/W
+bwa_bwe_bwi_bwo_bwa_bwa
+chwa_chwe_chwi_chwo_chwa_chwa
+dwa_dwe_dwi_dwo_dwa_dwa
+fwa_fwe_fwi_fwo_fwa_fwa
+gwa_gwe_gwi_gwo_gwa_gwa
+jwa_jwe_jwi_jwo_jwa_jwa
+kwa_kwe_kwi_kwo_kwa_kwa
+lwa_lwe_lwi_lwo_lwa_lwa
+mwa_mwe_mwi_mwo_mwa_mwa
+nwa_nwe_nwi_nwo_nwa_nwa
+pwa_pwe_pwi_pwo_pwa_pwa
+rwa_rwe_rwi_rwo_rwa_rwa
+swa_swe_swi_swo_swa_swa
+twa_twe_twi_two_twa_twa
+ywa_ywe_ywi_ywo_ywa_ywa
+zwa_zwe_zwi_zwo_zwa_zwa

@@ -1,0 +1,30 @@
+site_name: VocalParam Documentation
+site_description: Sistema Unificado de Grabación y Configuración de Voicebanks
+site_author: lxisus
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: red
+    accent: red
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+
+nav:
+  - Inicio: index.md
+  - Guía de Usuario: user_guide.md
+  - Referencia Técnica:
+    - Core: reference/core.md
+    - UI: reference/ui.md
+  - Desarrollo:
+    - Flujo de Trabajo: workflow.md
+    - Arquitectura: architecture.md

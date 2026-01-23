@@ -1,0 +1,1 @@
+Ver Maqueta de la GUI =  .\venv\Scripts\python.exe src/main.py
