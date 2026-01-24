@@ -7,7 +7,7 @@ Based on Section 9.2 layout specification.
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QMenuBar, QMenu, QStatusBar, QSplitter, QLabel,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QStackedWidget
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
@@ -15,6 +15,8 @@ from PyQt6.QtGui import QAction, QKeySequence
 from ui.reclist_widget import ReclistWidget
 from ui.recorder_widget import RecorderWidget
 from ui.editor_widget import EditorWidget
+from ui.audio_settings_dialog import AudioSettingsDialog
+from core.audio_engine import AudioEngine
 from utils.constants import COLORS
 from utils.logger import get_logger
 
@@ -45,10 +47,12 @@ class MainWindow(QMainWindow):
         
         self._current_project = None
         self._current_bpm = 120
+        self.audio_engine = AudioEngine()
         
         self._setup_ui()
         self._setup_menu()
         self._setup_statusbar()
+        self._setup_connections()
         self._apply_dark_theme()
         
         logger.info("MainWindow initialized")
@@ -69,15 +73,25 @@ class MainWindow(QMainWindow):
         self.reclist_widget = ReclistWidget()
         splitter.addWidget(self.reclist_widget)
         
-        # Right panel: Content area (switches between recorder and editor)
-        self.content_stack = QWidget()
-        content_layout = QVBoxLayout(self.content_stack)
+        # Right panel: Content area using QStackedWidget
+        self.content_stack = QStackedWidget()
         
-        # For now, show placeholder
-        placeholder = QLabel("Cargue una reclist para comenzar")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 18px;")
-        content_layout.addWidget(placeholder)
+        # 0: Placeholder
+        self.placeholder_widget = QWidget()
+        placeholder_layout = QVBoxLayout(self.placeholder_widget)
+        placeholder_label = QLabel("Cargue una reclist para comenzar")
+        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 18px;")
+        placeholder_layout.addWidget(placeholder_label)
+        self.content_stack.addWidget(self.placeholder_widget)
+        
+        # 1: Recorder
+        self.recorder_widget = RecorderWidget(self.audio_engine)
+        self.content_stack.addWidget(self.recorder_widget)
+        
+        # 2: Editor
+        self.editor_widget = EditorWidget()
+        self.content_stack.addWidget(self.editor_widget)
         
         splitter.addWidget(self.content_stack)
         
@@ -85,6 +99,26 @@ class MainWindow(QMainWindow):
         splitter.setSizes([300, 700])
         
         layout.addWidget(splitter)
+    
+    def _setup_connections(self):
+        """Connect signals and slots."""
+        self.reclist_widget.line_selected.connect(self._on_line_selected)
+        self.recorder_widget.recording_stopped.connect(self._on_recording_stopped)
+    
+    def _on_line_selected(self, index, line):
+        """Handle line selection from reclist."""
+        logger.info(f"Line selected: {line.raw_text}")
+        self.recorder_widget.set_line(line)
+        self.recorder_widget.set_bpm(self._current_bpm)
+        self.content_stack.setCurrentIndex(1)  # Show recorder
+    
+    def _on_recording_stopped(self, audio_data):
+        """Handle recording completion."""
+        if audio_data is not None:
+             # TODO: Save audio and update status
+             logger.info("Received audio data from recorder")
+             # For now just print length
+             print(f"Captured {len(audio_data)} samples")
     
     def _setup_menu(self):
         """Setup menu bar."""
@@ -136,6 +170,12 @@ class MainWindow(QMainWindow):
         generate_oto.setShortcut("Ctrl+G")
         generate_oto.triggered.connect(self._on_generate_oto)
         project_menu.addAction(generate_oto)
+        
+        project_menu.addSeparator()
+        
+        audio_setup = QAction("⚙ Configuración de Audio", self)
+        audio_setup.triggered.connect(self._on_audio_settings)
+        project_menu.addAction(audio_setup)
         
         # Help menu
         help_menu = menubar.addMenu("A&yuda")
@@ -239,6 +279,15 @@ class MainWindow(QMainWindow):
         logger.info("Generate oto.ini requested")
         # TODO: Implement oto generation
         self.statusbar.showMessage("Generando oto.ini...", 3000)
+    
+    def _on_audio_settings(self):
+        """Show audio hardware configuration."""
+        dialog = AudioSettingsDialog(self.audio_engine, self)
+        if dialog.exec() == AudioSettingsDialog.DialogCode.Accepted:
+            input_idx, output_idx = dialog.get_selected_devices()
+            self.audio_engine.set_devices(input_idx, output_idx)
+            self.audio_engine.save_config()  # Persist selection
+            self.statusbar.showMessage("Configuración de audio actualizada", 3000)
     
     def _on_about(self):
         """Show about dialog."""

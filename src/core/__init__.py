@@ -2,6 +2,7 @@
 
 from .models import PhonemeType, PhoneticLine, OtoEntry, ProjectData
 from .reclist_parser import ReclistParser, ReclistParseError
+from .audio_engine import AudioEngine
 
 __all__ = [
     "PhonemeType",
@@ -10,4 +11,5 @@ __all__ = [
     "ProjectData",
     "ReclistParser",
     "ReclistParseError",
+    "AudioEngine",
 ]

@@ -24,6 +24,10 @@ def main():
     
     # Create Qt application
     app = QApplication(sys.argv)
+    
+    # Debug hardware
+    from core.audio_engine import AudioEngine
+    AudioEngine().log_hardware_status()
     app.setApplicationName("VocalParam")
     app.setApplicationVersion("1.0.0-prototype")
     app.setOrganizationName("VocalParam")

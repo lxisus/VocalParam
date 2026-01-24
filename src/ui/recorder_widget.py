@@ -9,8 +9,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+import pyqtgraph as pg
+import numpy as np
 
 from core.models import PhoneticLine
+from core.audio_engine import AudioEngine
 from utils.constants import COLORS, DEFAULT_BPM, MORAS_PER_LINE
 from utils.logger import get_logger
 
@@ -82,8 +85,9 @@ class RecorderWidget(QWidget):
     recording_stopped = pyqtSignal(object)  # audio data
     recording_cancelled = pyqtSignal()
     
-    def __init__(self, parent=None):
+    def __init__(self, audio_engine: AudioEngine, parent=None):
         super().__init__(parent)
+        self.engine = audio_engine
         self._bpm = DEFAULT_BPM
         self._current_line: PhoneticLine = None
         self._current_mora = 0
@@ -135,6 +139,17 @@ class RecorderWidget(QWidget):
         
         layout.addLayout(mora_container)
         
+        # Oscilloscope
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('#1A1A1A')
+        self.plot_widget.setYRange(-1, 1)
+        self.plot_widget.hideAxis('bottom')
+        self.plot_widget.hideAxis('left')
+        self.plot_widget.setFixedHeight(120)
+        
+        self.curve = self.plot_widget.plot(pen=pg.mkPen(COLORS['success'], width=2))
+        layout.addWidget(self.plot_widget)
+        
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximum(100)
@@ -162,8 +177,8 @@ class RecorderWidget(QWidget):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(20)
         
-        self.rerecord_btn = QPushButton("Re-grabar (R)")
-        self.rerecord_btn.setShortcut("R")
+        self.rerecord_btn = QPushButton("Iniciar/Re-grabar (Espacio/R)")
+        self.rerecord_btn.setShortcut("Space")
         self.rerecord_btn.clicked.connect(self._on_rerecord)
         self.rerecord_btn.setStyleSheet(self._button_style("#FFB86C"))
         button_layout.addWidget(self.rerecord_btn)
@@ -212,6 +227,9 @@ class RecorderWidget(QWidget):
         
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self._update_progress)
+        
+        self.scope_timer = QTimer()
+        self.scope_timer.timeout.connect(self._update_scope)
     
     def set_line(self, line: PhoneticLine):
         """Set the current line to record.
@@ -256,9 +274,25 @@ class RecorderWidget(QWidget):
         
         self.progress_bar.setMaximum(total_duration_ms)
         
-        # Start timers
+        # Start hardware recording
+        try:
+            self.engine.start_recording()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error de Audio", 
+                               f"No se pudo iniciar la grabación:\n{str(e)}\n\n"
+                               "Verifica tu configuración de audio en Proyecto > Configuración.")
+            self._reset_state()
+            self._is_recording = False
+            return
+
+        # Start timers only if hardware recording started
         self.metronome_timer.start(ms_per_beat)
         self.progress_timer.start(50)  # Update every 50ms
+        self.scope_timer.start(30)     # Update display every 30ms
+        
+        # Play first click
+        self.engine.play_click(accent=True)
         
         self.recording_started.emit()
         logger.info(f"Recording started: {self._current_line.raw_text}")
@@ -268,6 +302,10 @@ class RecorderWidget(QWidget):
         self._is_recording = False
         self.metronome_timer.stop()
         self.progress_timer.stop()
+        self.scope_timer.stop()
+        
+        # Stop hardware recording
+        self._last_audio = self.engine.stop_recording()
         
         logger.info("Recording stopped")
     
@@ -298,7 +336,13 @@ class RecorderWidget(QWidget):
         if self._current_mora < len(self.mora_boxes):
             self.mora_boxes[self._current_mora].set_active(True)
         
-        # TODO: Play click sound via AudioEngine
+        # Play click sound
+        self.engine.play_click(accent=False)
+    
+    def _update_scope(self):
+        """Update the oscilloscope plot."""
+        data = self.engine.get_scope_data()
+        self.curve.setData(data)
     
     def _update_progress(self):
         """Update progress bar and time display."""
@@ -321,8 +365,8 @@ class RecorderWidget(QWidget):
     def _on_accept(self):
         """Handle accept button."""
         self.stop_recording()
-        # TODO: Return recorded audio
-        self.recording_stopped.emit(None)
+        # Return recorded audio
+        self.recording_stopped.emit(self._last_audio)
     
     def _on_cancel(self):
         """Handle cancel button."""
