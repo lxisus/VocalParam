@@ -106,6 +106,13 @@ class AudioSettingsDialog(QDialog):
         level_layout.addWidget(self.level_meter)
         input_layout.addLayout(level_layout)
         
+        # Sample Rate Selector (New Row)
+        sr_layout = QHBoxLayout()
+        sr_layout.addWidget(QLabel("Calidad:"))
+        self.sr_combo = QComboBox()
+        sr_layout.addWidget(self.sr_combo)
+        input_layout.addLayout(sr_layout)
+        
         layout.addWidget(input_group)
 
         # Output Group
@@ -120,6 +127,11 @@ class AudioSettingsDialog(QDialog):
         self.test_btn.setFixedWidth(80)
         out_select_layout.addWidget(self.test_btn)
         output_layout.addLayout(out_select_layout)
+        
+        # Hardware Config Button
+        self.config_btn = QPushButton("⚙ Configurar Hardware")
+        self.config_btn.clicked.connect(self._open_hardware_panel)
+        output_layout.addWidget(self.config_btn)
         
         layout.addWidget(output_group)
 
@@ -180,7 +192,22 @@ class AudioSettingsDialog(QDialog):
             prefix = "⚡ [ASIO]" if dev['is_asio'] else f"[{dev['api']}]"
             self.output_combo.addItem(f"{prefix} {dev['name']}", dev)
 
-        self.help_lbl.setText(f"✓ Driver {current_input['api']} activo.")
+        # Update Driver Status Feedback
+        self._update_driver_status(current_input['api'], current_input['is_asio'])
+        
+        # Update Sample Rates
+        self._update_sample_rates(current_input['index'])
+        
+        # Update Config Button
+        if current_input['is_asio']:
+            self.config_btn.setText("🎛 Panel de Control ASIO")
+            self.config_btn.setEnabled(True)
+        elif "DirectSound" in current_input['api'] or "MME" in current_input['api']:
+            self.config_btn.setText("⚙ Panel de Sonido Windows")
+            self.config_btn.setEnabled(True)
+        else:
+            self.config_btn.setText("Configuración no disponible")
+            self.config_btn.setEnabled(False)
         
         # Auto-match names
         self._smart_select_output(current_input['name'])
@@ -243,6 +270,42 @@ class AudioSettingsDialog(QDialog):
         self.level_timer.stop()
         self.engine.stop_monitoring()
         super().closeEvent(event)
+
+    def _update_driver_status(self, api_name, is_asio):
+        """Update the status label with color coding."""
+        if is_asio:
+            self.help_lbl.setText(f"✓ Driver {api_name} activo (Baja Latencia - Recomendado)")
+            self.help_lbl.setStyleSheet(f"color: {COLORS['success']}; font-weight: bold;")
+        elif "WASAPI" in api_name:
+            self.help_lbl.setText(f"⚠ Driver {api_name} (Modo Compartido)")
+            self.help_lbl.setStyleSheet(f"color: {COLORS['warning']};")
+        else:
+            self.help_lbl.setText(f"✕ Driver {api_name} (Alta Latencia - Posible Retraso)")
+            self.help_lbl.setStyleSheet(f"color: {COLORS['error']};")
+
+    def _update_sample_rates(self, device_id):
+        """Populate sample rate combo based on device capabilities."""
+        self.sr_combo.clear()
+        caps = self.engine.check_device_capabilities(device_id)
+        
+        for sr, supported in caps.items():
+            if supported:
+                self.sr_combo.addItem(f"{sr} Hz", sr)
+                
+        # Select current SR if available
+        current_sr = self.engine._active_sr
+        index = self.sr_combo.findData(current_sr)
+        if index >= 0:
+            self.sr_combo.setCurrentIndex(index)
+
+    def _open_hardware_panel(self):
+        """Open system audio panel."""
+        import subprocess
+        try:
+            # For Windows
+            subprocess.Popen("control mmsys.cpl sounds")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No se pudo abrir el panel: {e}")
 
     def get_selected_devices(self):
         in_data = self.input_combo.currentData()

@@ -1,5 +1,6 @@
 # BLOQUE 1: Vocales Puras (001-005)
 # Capturar transiciones V-V
+
 a_a_i_a_u_e_o
 e_e_i_e_u_a_o
 i_i_a_i_e_o_u
@@ -9,6 +10,7 @@ u_u_a_u_e_o_i
 # BLOQUE 2: Consonantes Básicas (006-024)
 # Sonidos iniciales y codas simples
 # B, CH, D, F, G, J, K, L, LL, M, N, Ñ, P, R, RR, S, T, Y, Z
+
 ba_be_bi_bo_bu_ba_b
 cha_che_chi_cho_chu_cha_ch
 da_de_di_do_du_da_d
@@ -31,6 +33,7 @@ za_ze_zi_zo_zu_za_z
 
 # BLOQUE 3: Grupos Consonánticos "L" (025-030)
 # Consonante + L
+
 bla_ble_bli_blo_blu_bla_bla
 cla_cle_cli_clo_clu_cla_cla
 fla_fle_fli_flo_flu_fla_fla
@@ -40,6 +43,7 @@ tla_tle_tli_tlo_tlu_tla_tla
 
 # BLOQUE 4: Grupos Consonánticos "R" (031-037)
 # Consonante + R
+
 bra_bre_bri_bro_bru_bra_bra
 cra_cre_cri_cro_cru_cra_cra
 dra_dre_dri_dro_dru_dra_dra
@@ -50,6 +54,7 @@ tra_tre_tri_tro_tru_tra_tra
 
 # BLOQUE 5: Palatalización "Y" (038-052)
 # Diptongos con I/Y
+
 bya_bye_byo_byu_bya_bya
 chya_chye_chyo_chyu_chya_chya
 dya_dye_dyo_dyu_dya_dya
@@ -68,11 +73,13 @@ zya_zye_zyo_zyu_zya_zya
 
 # BLOQUE 6: Respiraciones (053-054)
 # Inhalación y Exhalación
+
 a_R_i_R_u_R_e_R
 o_R_a_R_i_R_o_R
 
 # BLOQUE 7: Labialización "W" (055-070)
 # Diptongos con U/W
+
 bwa_bwe_bwi_bwo_bwa_bwa
 chwa_chwe_chwi_chwo_chwa_chwa
 dwa_dwe_dwi_dwo_dwa_dwa

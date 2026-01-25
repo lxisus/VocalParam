@@ -10,10 +10,12 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QLineEdit, QFileDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-import pyqtgraph as pg
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+import time
 import numpy as np
 
 from core.models import PhoneticLine
+from ui.waveform_scope import WaveformScope
 from core.audio_engine import AudioEngine
 from utils.constants import COLORS, DEFAULT_BPM, MORAS_PER_LINE
 from utils.logger import get_logger
@@ -114,7 +116,7 @@ class RecorderWidget(QWidget):
         self.title_label.setStyleSheet(f"""
             font-size: 24px;
             font-weight: bold;
-            color: {COLORS['accent_recording']};
+            color: {COLORS['text_secondary']};
         """)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.title_label)
@@ -173,16 +175,10 @@ class RecorderWidget(QWidget):
         
         layout.addLayout(mora_container)
         
-        # Oscilloscope
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground('#1A1A1A')
-        self.plot_widget.setYRange(-1, 1)
-        self.plot_widget.hideAxis('bottom')
-        self.plot_widget.hideAxis('left')
-        self.plot_widget.setFixedHeight(120)
-        
-        self.curve = self.plot_widget.plot(pen=pg.mkPen(COLORS['success'], width=2))
-        layout.addWidget(self.plot_widget)
+        # Oscilloscope / Waveform
+        self.wave_scope = WaveformScope()
+        self.wave_scope.setFixedHeight(120)
+        layout.addWidget(self.wave_scope)
         
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -313,12 +309,16 @@ class RecorderWidget(QWidget):
         self._is_recording = True
         self._current_mora = 0
         self._elapsed_ms = 0
+        self._start_time = time.time()
         self._last_audio = None
         self.listen_btn.setEnabled(False)
+        self._update_recording_status(True)
         
-        # Calculate interval
+        # Calculate interval with 1 extra beat (the "tail")
         ms_per_beat = int(60000 / self._bpm)
-        total_duration_ms = ms_per_beat * len(self._current_line.segments)
+        self.tail_beats = 1
+        total_beats = len(self._current_line.segments) + self.tail_beats
+        total_duration_ms = ms_per_beat * total_beats
         
         self.progress_bar.setMaximum(total_duration_ms)
         
@@ -355,9 +355,28 @@ class RecorderWidget(QWidget):
         self.time_label.setText("0.0s / 0.0s")
         self.listen_btn.setEnabled(False)
         self._last_audio = None
+        self.wave_scope.clear()
         
         for box in self.mora_boxes:
             box.set_active(False)
+            
+        self._update_recording_status(False)
+
+    def _update_recording_status(self, is_recording: bool):
+        """Update the recording title style."""
+        if is_recording:
+            color = COLORS['accent_recording']
+            text = "GRABANDO..."
+        else:
+            color = COLORS['text_secondary']
+            text = "GRABANDO"
+            
+        self.title_label.setText(text)
+        self.title_label.setStyleSheet(f"""
+            font-size: 24px;
+            font-weight: bold;
+            color: {color};
+        """)
     
     def _on_metronome_tick(self):
         """Handle metronome tick."""
@@ -367,33 +386,45 @@ class RecorderWidget(QWidget):
         
         self._current_mora += 1
         
-        # Check if done
-        if self._current_mora >= len(self._current_line.segments):
+        # Check if segments are done
+        segments_done = self._current_mora >= len(self._current_line.segments)
+        
+        # Check if we should stop (after segments + extra tail)
+        if self._current_mora >= len(self._current_line.segments) + getattr(self, 'tail_beats', 1):
             self.stop_recording()
             return
         
-        # Activate next mora
-        if self._current_mora < len(self.mora_boxes):
+        # Only activate boxes if we are still in segments
+        if not segments_done:
             self.mora_boxes[self._current_mora].set_active(True)
-        
-        # Play click sound
-        self.engine.play_click(accent=False)
+            # Play regular click
+            self.engine.play_click(accent=False)
+        else:
+            # Tail phase: Keep recording but stop visual metronome
+            # We can play a softer click or silence here
+            pass
     
     def _update_scope(self):
-        """Update the oscilloscope plot."""
+        """Update the scrolling waveform plot (DSP)."""
         data = self.engine.get_scope_data()
-        self.curve.setData(data)
+        self.wave_scope.update_data(data)
     
     def _update_progress(self):
         """Update progress bar and time display."""
         if not self._is_recording:
             return
         
-        self._elapsed_ms += 50
+        # Real-time sync (M5.2)
+        elapsed_real = (time.time() - self._start_time) * 1000
+        self._elapsed_ms = int(elapsed_real)
         self.progress_bar.setValue(self._elapsed_ms)
         
         elapsed_s = self._elapsed_ms / 1000
-        total_s = self._current_line.expected_duration_ms / 1000
+        ms_per_beat = int(60000 / self._bpm)
+        total_beats = len(self._current_line.segments) + getattr(self, 'tail_beats', 1)
+        total_s = (total_beats * ms_per_beat) / 1000
+        
+        # Format: 3.1s / 4.5s (Tail included)
         self.time_label.setText(f"{elapsed_s:.1f}s / {total_s:.1f}s")
     
     def _on_rerecord(self):
@@ -404,10 +435,12 @@ class RecorderWidget(QWidget):
     
     def _on_accept(self):
         """Handle accept button."""
-        self.stop_recording()
+        # Fix 44-byte bug (M5.1): Don't stop if already stopped, just save what we have
+        if self._is_recording:
+            self.stop_recording()
         
         # Save audio if a line is selected and we have a path
-        if self._current_line and self._last_audio is not None:
+        if self._current_line and self._last_audio is not None and len(self._last_audio) > 0:
              wav_name = f"{self._current_line.raw_text}.wav"
              save_file = Path(self.path_edit.text()) / wav_name
              try:
@@ -455,4 +488,5 @@ class RecorderWidget(QWidget):
         if self._last_audio is not None and len(self._last_audio) > 0:
             self.listen_btn.setEnabled(True)
         
+        self._update_recording_status(False)
         logger.info("Recording stopped")

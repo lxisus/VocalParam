@@ -5,6 +5,9 @@ SAMPLE_RATE = 44100  # Hz
 BIT_DEPTH = 16
 CHANNELS = 1  # Mono
 BUFFER_SIZE = 512  # samples (~11.6ms at 44.1kHz)
+PRO_DEVICE_KEYWORDS = ["ASIO", "UMC", "Focusrite", "Yamaha", "Steinberg", "RME", "Audient"]
+API_PRIORITY = {"ASIO": 100, "Windows WDM-KS": 80, "Windows WASAPI": 60, "MME": 20}
+SUPPORTED_RATES = [44100, 48000, 88200, 96000]
 
 # Default project settings
 DEFAULT_BPM = 120

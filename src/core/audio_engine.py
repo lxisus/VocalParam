@@ -11,7 +11,10 @@ import json
 from pathlib import Path
 from typing import Optional, Callable
 import threading
-from utils.constants import SAMPLE_RATE, CHANNELS
+from utils.constants import (
+    SAMPLE_RATE, CHANNELS, PRO_DEVICE_KEYWORDS, 
+    API_PRIORITY, SUPPORTED_RATES
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -38,6 +41,8 @@ class AudioEngine:
         self._monitoring_stream: Optional[sd.InputStream] = None
         self._current_level: float = 0.0
         self._is_monitoring = False
+        self._is_closing = False
+        self._stream_lock = threading.Lock()
         
         # Pre-generate click sound (1000Hz sine for 50ms)
         self._click_sample = self._generate_click(1000, 0.05, 0.2)
@@ -163,6 +168,40 @@ class AudioEngine:
         self.input_device = input_idx
         self.output_device = output_idx
         logger.info(f"Devices set - Input: {input_idx}, Output: {output_idx}")
+
+    def check_device_capabilities(self, device_id: int) -> dict:
+        """Validate sample rates for a specific device."""
+        results = {}
+        for sr in SUPPORTED_RATES:
+            try:
+                sd.check_input_settings(device=device_id, samplerate=sr, channels=self._channels)
+                results[sr] = True
+            except Exception:
+                results[sr] = False
+        return results
+
+    class DeviceScorer:
+        @staticmethod
+        def score(device_info: dict) -> int:
+            score = 0
+            name = device_info['name']
+            api = device_info['api']
+            
+            # API Priority
+            for api_key, points in API_PRIORITY.items():
+                if api_key in api:
+                    score += points
+                    
+            # Pro Hardware Keywords
+            for kw in PRO_DEVICE_KEYWORDS:
+                if kw in name:
+                    score += 30
+                    
+            # Channels
+            if device_info['inputs'] >= 2:
+                score += 10
+                
+            return score
 
     def _generate_click(self, freq: float, duration: float, volume: float) -> np.ndarray:
         """Generate a click sample."""
@@ -364,10 +403,20 @@ class AudioEngine:
             return np.array([], dtype=np.float32)
         
         self._is_recording = False
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        
+        # Safe stream closing
+        with self._stream_lock:
+            if self._stream:
+                self._is_closing = True
+                try:
+                    self._stream.stop()
+                    self._stream.close()
+                except Exception as e:
+                    logger.error(f"Error closing stream: {e}")
+                finally:
+                    self._stream = None
+                    self._is_closing = False
+                time.sleep(0.1)  # Give HW time to release on Windows
             
         if not self._recording_data:
             return np.array([], dtype=np.float32)
@@ -387,13 +436,17 @@ class AudioEngine:
             # Convert float32 to int16
             data = (data * 32767).astype(np.int16)
             
+        # Validate parameters - Fallback to defaults if not set
+        sr = self._active_sr if self._active_sr else SAMPLE_RATE
+        ch = self._active_channels if self._active_channels else self._channels
+            
         with wave.open(str(filepath), 'wb') as wf:
-            wf.setnchannels(self._channels)
+            wf.setnchannels(ch)
             wf.setsampwidth(2)  # 2 bytes for 16-bit
-            wf.setframerate(self._sample_rate)
+            wf.setframerate(sr)
             wf.writeframes(data.tobytes())
-        
-        logger.info(f"Saved audio to {filepath}")
+            
+        logger.info(f"Saved audio: {filepath} | {sr}Hz | {ch}ch")
 
     def get_devices(self):
         """Return list of available audio devices."""
