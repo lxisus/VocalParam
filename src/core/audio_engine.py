@@ -180,6 +180,24 @@ class AudioEngine:
         except Exception as e:
             logger.error(f"Error playing click: {e}")
 
+    def play_audio(self, data: np.ndarray):
+        """Play back a given audio buffer."""
+        if data is None or len(data) == 0:
+            logger.warning("Attempted to play empty audio buffer")
+            return
+            
+        try:
+            sd.play(data, self._active_sr, device=self.output_device)
+        except Exception as e:
+            logger.error(f"Error playing audio: {e}")
+
+    def stop_audio(self):
+        """Stop any current playback."""
+        try:
+            sd.stop()
+        except Exception as e:
+            logger.error(f"Error stopping audio: {e}")
+
     def play_test_sound(self, device_id: Optional[int] = None):
         """Play a short test tone to verify output."""
     def stop_monitoring(self):

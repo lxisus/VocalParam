@@ -4,9 +4,10 @@ Visual and audio metronome for synchronized recording.
 Based on Section 9.3 RecorderWidget specification.
 """
 
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QProgressBar
+    QPushButton, QProgressBar, QLineEdit, QFileDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import pyqtgraph as pg
@@ -92,6 +93,12 @@ class RecorderWidget(QWidget):
         self._current_line: PhoneticLine = None
         self._current_mora = 0
         self._is_recording = False
+        self._last_audio = None
+        
+        # Determine default save path
+        project_root = Path(__file__).parent.parent.parent
+        self._dest_path = project_root / "recordings" / "test_samples"
+        self._dest_path.mkdir(parents=True, exist_ok=True)
         
         self._setup_ui()
         self._setup_timers()
@@ -126,6 +133,33 @@ class RecorderWidget(QWidget):
         instruction.setStyleSheet(f"color: {COLORS['text_secondary']};")
         instruction.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(instruction)
+        
+        # Path Destination Selector
+        path_layout = QHBoxLayout()
+        path_label = QLabel("Destino:")
+        path_label.setFixedWidth(50)
+        path_layout.addWidget(path_label)
+        
+        self.path_edit = QLineEdit(str(self._dest_path))
+        self.path_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: #252525;
+                color: {COLORS['text_primary']};
+                border: 1px solid #3D3D3D;
+                border-radius: 4px;
+                padding: 5px;
+            }}
+        """)
+        self.path_edit.setReadOnly(True)
+        path_layout.addWidget(self.path_edit)
+        
+        self.browse_btn = QPushButton("...")
+        self.browse_btn.setFixedWidth(40)
+        self.browse_btn.clicked.connect(self._on_browse_destination)
+        self.browse_btn.setStyleSheet(self._button_style("#6272A4"))
+        path_layout.addWidget(self.browse_btn)
+        
+        layout.addLayout(path_layout)
         
         # Mora boxes container
         mora_container = QHBoxLayout()
@@ -197,6 +231,18 @@ class RecorderWidget(QWidget):
         
         layout.addLayout(button_layout)
         
+        # Listen Button (Extra controls)
+        extra_layout = QHBoxLayout()
+        self.listen_btn = QPushButton("▶ Escuchar / Listen")
+        self.listen_btn.clicked.connect(self._on_listen_clicked)
+        self.listen_btn.setStyleSheet(self._button_style("#BD93F9"))
+        self.listen_btn.setEnabled(False)
+        self.listen_btn.setMinimumWidth(200)
+        extra_layout.addStretch()
+        extra_layout.addWidget(self.listen_btn)
+        extra_layout.addStretch()
+        layout.addLayout(extra_layout)
+        
         # Spacer
         layout.addStretch()
     
@@ -267,6 +313,8 @@ class RecorderWidget(QWidget):
         self._is_recording = True
         self._current_mora = 0
         self._elapsed_ms = 0
+        self._last_audio = None
+        self.listen_btn.setEnabled(False)
         
         # Calculate interval
         ms_per_beat = int(60000 / self._bpm)
@@ -291,23 +339,13 @@ class RecorderWidget(QWidget):
         self.progress_timer.start(50)  # Update every 50ms
         self.scope_timer.start(30)     # Update display every 30ms
         
-        # Play first click
+        # Play first click and activate first mora box
         self.engine.play_click(accent=True)
+        if self.mora_boxes:
+            self.mora_boxes[0].set_active(True)
         
         self.recording_started.emit()
         logger.info(f"Recording started: {self._current_line.raw_text}")
-    
-    def stop_recording(self):
-        """Stop recording."""
-        self._is_recording = False
-        self.metronome_timer.stop()
-        self.progress_timer.stop()
-        self.scope_timer.stop()
-        
-        # Stop hardware recording
-        self._last_audio = self.engine.stop_recording()
-        
-        logger.info("Recording stopped")
     
     def _reset_state(self):
         """Reset recording state."""
@@ -315,6 +353,8 @@ class RecorderWidget(QWidget):
         self._elapsed_ms = 0
         self.progress_bar.setValue(0)
         self.time_label.setText("0.0s / 0.0s")
+        self.listen_btn.setEnabled(False)
+        self._last_audio = None
         
         for box in self.mora_boxes:
             box.set_active(False)
@@ -365,6 +405,17 @@ class RecorderWidget(QWidget):
     def _on_accept(self):
         """Handle accept button."""
         self.stop_recording()
+        
+        # Save audio if a line is selected and we have a path
+        if self._current_line and self._last_audio is not None:
+             wav_name = f"{self._current_line.raw_text}.wav"
+             save_file = Path(self.path_edit.text()) / wav_name
+             try:
+                 self.engine.save_wav(self._last_audio, str(save_file))
+                 logger.info(f"Auto-saved recording to: {save_file}")
+             except Exception as e:
+                 logger.error(f"Failed to auto-save recording: {e}")
+
         # Return recorded audio
         self.recording_stopped.emit(self._last_audio)
     
@@ -373,3 +424,35 @@ class RecorderWidget(QWidget):
         self.stop_recording()
         self._reset_state()
         self.recording_cancelled.emit()
+
+    def _on_browse_destination(self):
+        """Open dialog to select destination folder."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Seleccionar carpeta de destino", str(self._dest_path)
+        )
+        if folder:
+            self._dest_path = Path(folder)
+            self.path_edit.setText(folder)
+            logger.info(f"Destination path changed to: {folder}")
+
+    def _on_listen_clicked(self):
+        """Play back the last recorded audio."""
+        if self._last_audio is not None:
+            self.engine.play_audio(self._last_audio)
+        else:
+            logger.warning("No audio to play")
+
+    def stop_recording(self):
+        """Stop recording."""
+        self._is_recording = False
+        self.metronome_timer.stop()
+        self.progress_timer.stop()
+        self.scope_timer.stop()
+        
+        # Stop hardware recording
+        self._last_audio = self.engine.stop_recording()
+        
+        if self._last_audio is not None and len(self._last_audio) > 0:
+            self.listen_btn.setEnabled(True)
+        
+        logger.info("Recording stopped")
