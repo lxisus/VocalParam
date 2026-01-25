@@ -149,3 +149,6 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+# Recordings and local samples
+recordings/

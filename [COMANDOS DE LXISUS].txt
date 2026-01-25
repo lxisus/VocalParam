@@ -1,8 +1,0 @@
-Ver Maqueta de la GUI = [ .\venv\Scripts\python.exe src/main.py ]
-
-Ver status = [ git status ]
-
-Guardar Progreso : Git
-1.- git add .
-2.- git commit -m "feat: descripción de lo que hicimos"
-3.- git push origin main
