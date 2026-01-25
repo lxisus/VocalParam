@@ -16,13 +16,14 @@ Estamos operando bajo la filosofía **Zero-Switch**, unificando la grabación y 
 - [x] Arquitectura MVC para escalabilidad.
 - [x] Sistema de logging y manejo de errores.
 
-### 🟡 Sprint 2: Grabación Proactiva y DSP (En Progreso)
+### 🟢 Sprint 2: Grabación Proactiva y Motor de Audio (Completado)
 - [x] **Grabación 7-Moras**: Metrónomo visual y auditivo de alta precisión.
 - [x] **Gestión de Archivos**: Selector de destino integrado en el panel de grabación.
 - [x] **Control de Calidad**: Botón Play/Listen para verificación inmediata.
 - [x] **Sincronización Crítica**: Corrección del desfase en Mora 0 (sincronización instantánea).
-- [ ] **Análisis DSP Inicial**: Extracción de onsets y offsets básicos para el Auto-Oto.
-- [ ] **Generación de oto.ini**: Algoritmo híbrido BPM + DSP (v0.5).
+- [x] **Motor de Audio V2**: Gestión segura de hardware (Windows Fix) y headers WAV dinámicos.
+- [x] **Visualización DSP**: WaveformScope de alta precisión con indicadores de nivel.
+- [x] **Sincronización de Tiempo**: Barra de progreso sincronizada en tiempo real (`time.time()`).
 
 ### ⚪ Sprint 3: Editor Visual de Parámetros
 - [ ] Implementación de `WaveformCanvas` interactivo.
