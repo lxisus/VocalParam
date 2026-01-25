@@ -5,15 +5,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-VocalParam integra el proceso de grabación (OREMO) y configuración (SetParam) de voicebanks para síntesis vocal UTAU/OpenUtau en una sola aplicación.
+VocalParam integra el proceso de grabación (**OREMO**) y configuración (**SetParam**) de voicebanks en una sola experiencia fluida, eliminando la fricción técnica y permitiendo que te enfoques en la calidad vocal desde el primer milisegundo.
 
 ## Características
 
-- 📋 Importación de Reclist formato 7-Moras
-- 🎤 Grabación con metrónomo visual y auditivo
-- ⚡ Generación automática de `oto.ini` (algoritmo híbrido BPM + DSP)
-- ✏️ Editor visual para ajustes manuales
-- 📦 Exportación completa (WAVs + oto.ini)
+- 🎯 **Flujo Unificado**: Graba y configura parámetros de forma simultánea.
+- 📋 **Soporte Reclist 7-Moras**: Validación y parseo automático de estructuras fonéticas.
+- 🎤 **Grabación de Alta Precisión**: Metrónomo visual y auditivo con sincronización perfecta (mora 0 iniciada instantáneamente).
+- 📂 **Gestión de Destinos**: Elige dónde guardar tus muestras directamente desde la interfaz de grabación.
+- ▶️ **Escucha Integrada**: Botón Play/Listen para verificar tomas antes de aceptarlas.
+- ⚡ **Auto-Oto**: Generación de `oto.ini` mediante algoritmo híbrido (BPM + DSP).
+- ✏️ **Editor Visual**: Ajuste fino de parámetros con feedback visual en tiempo real.
 
 ## Instalación
 
