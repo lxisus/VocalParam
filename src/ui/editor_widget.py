@@ -5,6 +5,7 @@ Based on Section 9.4 EditorWidget specification and RF-05 requirements.
 """
 
 from typing import List, Optional
+import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -66,22 +67,20 @@ class EditorWidget(QWidget):
         """)
         layout.addWidget(self.alias_label)
         
-        # Waveform placeholder
-        waveform_container = QWidget()
-        waveform_container.setMinimumHeight(200)
-        waveform_container.setStyleSheet(f"""
-            background-color: #252525;
-            border: 1px solid #3D3D3D;
-            border-radius: 8px;
-        """)
-        waveform_layout = QVBoxLayout(waveform_container)
+        # Waveform Canvas
+        from ui.waveform_canvas import WaveformCanvas
+        from controllers.dsp_controller import DSPController
         
-        waveform_placeholder = QLabel("Waveform Display\n(PyQtGraph - Sprint 4)")
-        waveform_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        waveform_placeholder.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        waveform_layout.addWidget(waveform_placeholder)
+        self.dsp_controller = DSPController()
+        self.canvas = WaveformCanvas()
+        self.canvas.setMinimumHeight(250)
         
-        layout.addWidget(waveform_container)
+        # Connect signals
+        self.dsp_controller.analysis_completed.connect(self._on_analysis_done)
+        self.dsp_controller.correction_updated.connect(self.canvas.set_pitch_curve)
+        self.canvas.point_added.connect(self._on_manual_point)
+        
+        layout.addWidget(self.canvas)
         
         # Parameter controls
         params_group = QGroupBox("Parámetros")
@@ -235,6 +234,26 @@ class EditorWidget(QWidget):
         self.parameters_changed.emit(self._current_entry)
         logger.debug(f"Parameter {param_name} changed to {value}")
     
+    def set_audio_data(self, data: np.ndarray, sr: int):
+        """Load audio data into the editor and start analysis."""
+        self.canvas.set_waveform(data, sr)
+        self.dsp_controller.analyze_audio(data)
+
+    def _on_analysis_done(self, result):
+        """Handle completion of DSP analysis."""
+        self.canvas.set_pitch_curve(result.pitch_curve)
+        logger.info("DSP analysis results displayed")
+
+    def _on_manual_point(self, time_s: float, rel_pos: float):
+        """Handle manual pitch point addition."""
+        # For prototype: map rel_pos (-0.4 to 0.4) back to a reasonable freq range
+        # C2 (65Hz) to C6 (1046Hz)
+        fmin = 65.0
+        fmax = 1046.0
+        normalized = (rel_pos + 0.4) / 0.8
+        freq = fmin + normalized * (fmax - fmin)
+        self.dsp_controller.add_manual_point(time_s, freq)
+
     def _on_play(self):
         """Handle play button."""
         logger.info("Play audio preview")

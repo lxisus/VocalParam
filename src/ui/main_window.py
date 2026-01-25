@@ -115,10 +115,12 @@ class MainWindow(QMainWindow):
     def _on_recording_stopped(self, audio_data):
         """Handle recording completion."""
         if audio_data is not None:
-             # TODO: Save audio and update status
-             logger.info("Received audio data from recorder")
-             # For now just print length
-             print(f"Captured {len(audio_data)} samples")
+             logger.info("Received audio data from recorder. Switching to editor.")
+             # Send to editor for analysis
+             self.editor_widget.set_audio_data(audio_data, self.audio_engine._sample_rate)
+             # Update status
+             self.content_stack.setCurrentIndex(2) # Show Editor
+             self.statusbar.showMessage("Grabación completa. Analizando...", 3000)
     
     def _setup_menu(self):
         """Setup menu bar."""
