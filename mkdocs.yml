@@ -21,6 +21,7 @@ plugins:
 
 nav:
   - Inicio: index.md
+  - Plan y Progreso: roadmap.md
   - Guía de Usuario: user_guide.md
   - Referencia Técnica:
     - Core: reference/core.md
