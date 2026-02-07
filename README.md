@@ -11,11 +11,12 @@ VocalParam integra el proceso de grabación (**OREMO**) y configuración (**SetP
 
 - 🎯 **Flujo Unificado**: Graba y configura parámetros de forma simultánea.
 - 📋 **Soporte Reclist 7-Moras**: Validación y parseo automático de estructuras fonéticas.
-- 🎤 **Grabación de Alta Precisión**: Metrónomo visual y auditivo con sincronización perfecta (mora 0 iniciada instantáneamente).
-- 📂 **Gestión de Destinos**: Elige dónde guardar tus muestras directamente desde la interfaz de grabación.
-- ▶️ **Escucha Integrada**: Botón Play/Listen para verificar tomas antes de aceptarlas.
-- ⚡ **Auto-Oto**: Generación de `oto.ini` mediante algoritmo híbrido (BPM + DSP).
-- ✏️ **Editor Visual**: Ajuste fino de parámetros con feedback visual en tiempo real.
+- 🎤 **Grabación Pro**: Metrónomo de baja latencia, cuenta regresiva (Count-in) de 3 tiempos y duración mínima garantizada (4s) para asegurar silencios de calidad.
+- 📊 **Visualización Avanzada**: Espectrograma en tiempo real (STFT) y envolvente RMS superpuestos a la forma de onda.
+- ⚡ **Auto-Oto**: Generación inicial de `oto.ini` mediante detección de transientes (DSP) sincronizada con el BPM.
+- ✏️ **Editor Interactivo**: Marcadores visuales con validación en tiempo real (Regla de Oro: Overlap ≤ Pre-utterance).
+- 📂 **Sincronización Bidireccional**: Los cambios en la tabla de parámetros se reflejan instantáneamente en el editor visual y viceversa.
+- ▶️ **Verificación Instantánea**: Botón de escucha integrado para validar tomas y ajustes de OTO.
 
 ## Instalación
 
@@ -55,4 +56,4 @@ MIT License - Ver [LICENSE](LICENSE)
 
 ## Versión
 
-v1.0.0-prototype (Fase 1 MVP)
+v1.0.0-prototype (Sprint 3 Complete: Visual Editor & DSP)
