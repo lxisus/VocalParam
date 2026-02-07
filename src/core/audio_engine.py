@@ -15,6 +15,7 @@ from utils.constants import (
     SAMPLE_RATE, CHANNELS, PRO_DEVICE_KEYWORDS, 
     API_PRIORITY, SUPPORTED_RATES
 )
+from core.persistence import AppDatabase
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -27,7 +28,8 @@ class AudioEngine:
         self._channels = CHANNELS
         self._is_recording = False
         self._recording_data = []
-        self._stream: Optional[sd.InputStream] = None
+        self._input_stream: Optional[sd.InputStream] = None
+        self._output_stream: Optional[sd.OutputStream] = None
         
         # Device configuration
         self.input_device: Optional[int] = None
@@ -47,20 +49,21 @@ class AudioEngine:
         # Pre-generate click sound (1000Hz sine for 50ms)
         self._click_sample = self._generate_click(1000, 0.05, 0.2)
         self._click_accent = self._generate_click(1500, 0.05, 0.3)
+        self._click_countin = self._generate_click(800, 0.05, 0.2) # Lower pitch for count-in
         self._test_tone = self._generate_click(440, 0.5, 0.3)  # A4 note for test
         
         # Oscilloscope buffer (last 2048 samples)
         self._scope_buffer_size = 2048
         self._scope_buffer = np.zeros(self._scope_buffer_size, dtype=np.float32)
         
-        # Config persistence
-        self.config_path = Path.home() / ".vocalparam_audio.json"
+        # Database for config
+        self.db = AppDatabase()
         self.load_config()
         
         logger.info("AudioEngine initialized")
 
     def save_config(self):
-        """Save current device names to home directory."""
+        """Save current device names and settings to database."""
         devices = self.get_device_list()
         input_name = None
         output_name = None
@@ -78,22 +81,16 @@ class AudioEngine:
             "channels": self._active_channels
         }
         
-        try:
-            with open(self.config_path, 'w') as f:
-                json.dump(config, f)
-            logger.info(f"Audio config saved to {self.config_path}")
-        except Exception as e:
-            logger.error(f"Failed to save audio config: {e}")
+        self.db.set_setting("audio_config", config)
+        logger.info("Audio config saved to database")
 
     def load_config(self):
         """Load hardware selection by name to handle index changes."""
-        if not self.config_path.exists():
+        config = self.db.get_setting("audio_config")
+        if not config:
             return
             
         try:
-            with open(self.config_path, 'r') as f:
-                config = json.load(f)
-                
             in_name = config.get("input_device_name")
             out_name = config.get("output_device_name")
             self._active_sr = config.get("sample_rate", SAMPLE_RATE)
@@ -107,7 +104,8 @@ class AudioEngine:
                 if d['full_name'] == out_name:
                     self.output_device = d['index']
             
-            logger.info("Previous audio config loaded successfully")
+            self._regenerate_clicks() # Match click SR to hardware
+            logger.info("Audio config loaded from database")
         except Exception as e:
             logger.error(f"Failed to load audio config: {e}")
 
@@ -211,13 +209,53 @@ class AudioEngine:
         fade_out = np.linspace(1, 0, len(click))
         return (click * fade_out).astype(np.float32)
 
-    def play_click(self, accent: bool = False):
-        """Play the metronome click sound."""
-        sample = self._click_accent if accent else self._click_sample
+    def start_output_stream(self):
+        """Start a persistent output stream for low-latency metronome."""
+        if self._output_stream:
+            return
+            
         try:
-            sd.play(sample, self._sample_rate, device=self.output_device)
+            self._output_stream = sd.OutputStream(
+                samplerate=self._active_sr,
+                device=self.output_device,
+                channels=1 # Mono click
+            )
+            self._output_stream.start()
         except Exception as e:
-            logger.error(f"Error playing click: {e}")
+            logger.error(f"Failed to start output stream: {e}")
+
+    def stop_output_stream(self):
+        """Stop the persistent output stream."""
+        if self._output_stream:
+            try:
+                self._output_stream.stop()
+                self._output_stream.close()
+            except Exception as e:
+                logger.error(f"Error closing output stream: {e}")
+            finally:
+                self._output_stream = None
+
+    def play_click(self, accent: bool = False, countin: bool = False):
+        """Play the metronome click sound."""
+        if countin:
+            sample = self._click_countin
+        else:
+            sample = self._click_accent if accent else self._click_sample
+            
+        # Use persistent stream if available for glitch-free audio
+        if self._output_stream and self._output_stream.active:
+            try:
+                # Pad to buffer size if needed, or write directly
+                # sd.OutputStream.write expects C-contiguous array
+                self._output_stream.write(sample)
+            except Exception as e:
+                logger.error(f"Stream write error: {e}")
+        else:
+            # Fallback for preview/test
+            try:
+                sd.play(sample, self._active_sr, device=self.output_device)
+            except Exception as e:
+                logger.error(f"Error playing click: {e}")
 
     def play_audio(self, data: np.ndarray):
         """Play back a given audio buffer."""
@@ -335,6 +373,20 @@ class AudioEngine:
         
         return False, 0, 0
 
+    def _regenerate_clicks(self):
+        """Regenerate click samples at the specific active sample rate."""
+        sr = self._active_sr if self._active_sr else self._sample_rate
+        self._click_sample = self._generate_click_at_sr(1000, 0.05, 0.2, sr)
+        self._click_accent = self._generate_click_at_sr(1500, 0.05, 0.3, sr)
+        logger.debug(f"Clicks regenerated for {sr}Hz")
+
+    def _generate_click_at_sr(self, freq: float, duration: float, volume: float, sr: int) -> np.ndarray:
+        """Generate a click sample at specified sample rate."""
+        t = np.linspace(0, duration, int(sr * duration), False)
+        click = np.sin(freq * t * 2 * np.pi) * volume
+        fade_out = np.linspace(1, 0, len(click))
+        return (click * fade_out).astype(np.float32)
+
     def play_test_sound(self, device_id: Optional[int] = None):
         """Play test tone with fallback and safer error catching."""
         target_device = device_id if device_id is not None else self.output_device
@@ -420,9 +472,14 @@ class AudioEngine:
             
         if not self._recording_data:
             return np.array([], dtype=np.float32)
-            
+
         # Concatenate all chunks
         audio = np.concatenate(self._recording_data, axis=0)
+        
+        # Flatten for mono (N, 1) -> (N,)
+        if audio.ndim > 1 and audio.shape[1] == 1:
+            audio = audio.flatten()
+            
         logger.info(f"Recording stopped, captured {len(audio)} samples")
         return audio
 

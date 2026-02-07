@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QLineEdit, QFileDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import time
 import numpy as np
 
@@ -88,12 +87,16 @@ class RecorderWidget(QWidget):
     recording_stopped = pyqtSignal(object)  # audio data
     recording_cancelled = pyqtSignal()
     
+    MIN_RECORDING_DURATION_MS = 4000
+    COUNT_IN_BEATS = 3
+    
     def __init__(self, audio_engine: AudioEngine, parent=None):
         super().__init__(parent)
         self.engine = audio_engine
         self._bpm = DEFAULT_BPM
         self._current_line: PhoneticLine = None
         self._current_mora = 0
+        self._count_in_counter = 0 # Negative during count-in
         self._is_recording = False
         self._last_audio = None
         
@@ -272,6 +275,9 @@ class RecorderWidget(QWidget):
         
         self.scope_timer = QTimer()
         self.scope_timer.timeout.connect(self._update_scope)
+        # Slower updates for UI to prevent metronome jitter (trabado sound)
+        self.progress_interval = 100 # ms
+        self.scope_interval = 60 # ms
     
     def set_line(self, line: PhoneticLine):
         """Set the current line to record.
@@ -307,20 +313,35 @@ class RecorderWidget(QWidget):
             return
         
         self._is_recording = True
+        self._count_in_counter = -self.COUNT_IN_BEATS # Start at -3
         self._current_mora = 0
         self._elapsed_ms = 0
         self._start_time = time.time()
         self._last_audio = None
         self.listen_btn.setEnabled(False)
-        self._update_recording_status(True)
+        self._update_recording_status(True, "PREPARAR")
         
-        # Calculate interval with 1 extra beat (the "tail")
+        # Calculate interval and duration
         ms_per_beat = int(60000 / self._bpm)
         self.tail_beats = 1
-        total_beats = len(self._current_line.segments) + self.tail_beats
-        total_duration_ms = ms_per_beat * total_beats
         
-        self.progress_bar.setMaximum(total_duration_ms)
+        # Total duration must cover count-in + segments + tail, AND satisfy min duration
+        # Actually count-in is part of the recorded file, so it counts towards duration?
+        # User said: "Grabación se inicia desde el segundo 1... tiempo muerto para 3 clicks"
+        # So yes, count-in is recorded.
+        
+        notes_beats = len(self._current_line.segments) + self.tail_beats
+        notes_duration = notes_beats * ms_per_beat
+        countin_duration = self.COUNT_IN_BEATS * ms_per_beat
+        
+        # Ensure total duration is at least MIN_RECORDING_DURATION_MS
+        calculated_total = countin_duration + notes_duration
+        self._target_duration_ms = max(self.MIN_RECORDING_DURATION_MS, calculated_total)
+        
+        self.progress_bar.setMaximum(self._target_duration_ms)
+        
+        # Start persistent output stream for metronome FIRST
+        self.engine.start_output_stream()
         
         # Start hardware recording
         try:
@@ -332,24 +353,32 @@ class RecorderWidget(QWidget):
                                "Verifica tu configuración de audio en Proyecto > Configuración.")
             self._reset_state()
             self._is_recording = False
+            self.engine.stop_output_stream()
             return
 
-        # Start timers only if hardware recording started
+        # Start timers
         self.metronome_timer.start(ms_per_beat)
-        self.progress_timer.start(50)  # Update every 50ms
-        self.scope_timer.start(30)     # Update display every 30ms
+        self.progress_timer.start(self.progress_interval)
+        self.scope_timer.start(self.scope_interval)
         
-        # Play first click and activate first mora box
-        self.engine.play_click(accent=True)
-        if self.mora_boxes:
-            self.mora_boxes[0].set_active(True)
+        # Play first count-in click immediately
+        self._play_count_in()
         
         self.recording_started.emit()
-        logger.info(f"Recording started: {self._current_line.raw_text}")
+        logger.info(f"Recording sequence started: {self._current_line.raw_text}")
+    
+    def _play_count_in(self):
+        """Play count-in logic."""
+        self.engine.play_click(countin=True)
+        # Visual feedback for count-in
+        count = abs(self._count_in_counter)
+        if count > 0:
+            self._update_recording_status(True, f"PREPARAR: {count}...")
     
     def _reset_state(self):
         """Reset recording state."""
         self._current_mora = 0
+        self._count_in_counter = 0
         self._elapsed_ms = 0
         self.progress_bar.setValue(0)
         self.time_label.setText("0.0s / 0.0s")
@@ -362,11 +391,11 @@ class RecorderWidget(QWidget):
             
         self._update_recording_status(False)
 
-    def _update_recording_status(self, is_recording: bool):
+    def _update_recording_status(self, is_recording: bool, text_override: str = None):
         """Update the recording title style."""
         if is_recording:
             color = COLORS['accent_recording']
-            text = "GRABANDO..."
+            text = text_override if text_override else "GRABANDO..."
         else:
             color = COLORS['text_secondary']
             text = "GRABANDO"
@@ -380,29 +409,50 @@ class RecorderWidget(QWidget):
     
     def _on_metronome_tick(self):
         """Handle metronome tick."""
-        # Deactivate current mora
-        if self._current_mora < len(self.mora_boxes):
-            self.mora_boxes[self._current_mora].set_active(False)
+        # Handle Count-in phase
+        if self._count_in_counter < 0:
+            self._count_in_counter += 1
+            if self._count_in_counter < 0:
+                 self._play_count_in()
+                 return
+            else:
+                 # Count-in finished, start actual recording metrics
+                 self._update_recording_status(True, "GRABANDO...")
+                 # Start normal loop below (fall through to index 0)
         
-        self._current_mora += 1
+        # --- Normal Metronome Logic ---
         
-        # Check if segments are done
-        segments_done = self._current_mora >= len(self._current_line.segments)
+        # Deactivate previous mora visually
+        if self._current_mora > 0 and self._current_mora - 1 < len(self.mora_boxes):
+             self.mora_boxes[self._current_mora - 1].set_active(False)
         
-        # Check if we should stop (after segments + extra tail)
-        if self._current_mora >= len(self._current_line.segments) + getattr(self, 'tail_beats', 1):
+        # Check if we should stop (based on TIME, not just beats, to enforce min duration)
+        # But we align stopping with beats to be rhythmic.
+        # We stop if we are past the target duration.
+        
+        ms_per_beat = int(60000 / self._bpm)
+        current_beat_time = (self._current_mora + self.COUNT_IN_BEATS) * ms_per_beat
+        
+        if self._elapsed_ms >= self._target_duration_ms:
+            logger.info("Target duration reached, stopping.")
             self.stop_recording()
             return
+            
+        # Determine if we are in "mora" phase or "tail/padding" phase
+        num_segments = len(self._current_line.segments) if self._current_line else 0
         
-        # Only activate boxes if we are still in segments
-        if not segments_done:
-            self.mora_boxes[self._current_mora].set_active(True)
-            # Play regular click
-            self.engine.play_click(accent=False)
+        if self._current_mora < num_segments:
+             # Activate box
+             if self._current_mora < len(self.mora_boxes):
+                 self.mora_boxes[self._current_mora].set_active(True)
+             # Play accent/normal click
+             is_first = (self._current_mora == 0)
+             self.engine.play_click(accent=is_first)
         else:
-            # Tail phase: Keep recording but stop visual metronome
-            # We can play a softer click or silence here
-            pass
+             # Tail/Padding phase
+             self.engine.play_click(accent=False)
+             
+        self._current_mora += 1
     
     def _update_scope(self):
         """Update the scrolling waveform plot (DSP)."""
@@ -420,11 +470,8 @@ class RecorderWidget(QWidget):
         self.progress_bar.setValue(self._elapsed_ms)
         
         elapsed_s = self._elapsed_ms / 1000
-        ms_per_beat = int(60000 / self._bpm)
-        total_beats = len(self._current_line.segments) + getattr(self, 'tail_beats', 1)
-        total_s = (total_beats * ms_per_beat) / 1000
+        total_s = self._target_duration_ms / 1000
         
-        # Format: 3.1s / 4.5s (Tail included)
         self.time_label.setText(f"{elapsed_s:.1f}s / {total_s:.1f}s")
     
     def _on_rerecord(self):
@@ -482,8 +529,9 @@ class RecorderWidget(QWidget):
         self.progress_timer.stop()
         self.scope_timer.stop()
         
-        # Stop hardware recording
+        # Stop hardware recording AND output stream
         self._last_audio = self.engine.stop_recording()
+        self.engine.stop_output_stream()
         
         if self._last_audio is not None and len(self._last_audio) > 0:
             self.listen_btn.setEnabled(True)

@@ -28,6 +28,8 @@ COLORS = {
     "cutoff": "#FF69B4",      # Pink/Magenta
     "preutter": "#FF0000",    # Red
     "overlap": "#00FF00",     # Green
+    "accent_primary": "#BD93F9", # Purple
+    "accent_secondary": "#6272A4", # Grey-Blue
 }
 
 # File extensions

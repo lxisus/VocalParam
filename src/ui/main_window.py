@@ -11,17 +11,24 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
+from pathlib import Path
+from datetime import datetime
 
 from ui.reclist_widget import ReclistWidget
 from ui.recorder_widget import RecorderWidget
 from ui.editor_widget import EditorWidget
+from ui.parameter_table_widget import ParameterTableWidget
 from ui.audio_settings_dialog import AudioSettingsDialog
+from controllers.editor_controller import EditorController
 from core.audio_engine import AudioEngine
+from core.persistence import ProjectRepository, AppDatabase, PersistenceError
+from core.resource_manager import ResourceManager
+from core.models import ProjectData
+from core.oto_generator import OtoGenerator
 from utils.constants import COLORS
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-
 
 class MainWindow(QMainWindow):
     """Main application window.
@@ -31,9 +38,11 @@ class MainWindow(QMainWindow):
     │ VocalParam v1.0.0-proto    [Archivo] [Proyecto] [Ayuda]│
     ├────────────────────────────────────────────────────────┤
     │  ┌──────────┐  ┌────────────────────────────────────┐  │
-    │  │ RECLIST  │  │   RECORDER / EDITOR                │  │
-    │  │ [70 ln]  │  │                                    │  │
-    │  │          │  │   (Dynamic content area)           │  │
+    │  │ RECLIST  │  │   RECORDER / EDITOR SEQ            │  │
+    │  │ [70 ln]  │  │  ┌──────────────────────────────┐  │  │
+    │  │          │  │  │       Visual Editor          │  │  │
+    │  │          │  │  ├──────────────────────────────┤  │  │
+    │  │          │  │  │      Parameter Table         │  │  │
     │  └──────────┘  └────────────────────────────────────┘  │
     ├────────────────────────────────────────────────────────┤
     │ Status: Ready | BPM: 120 | Project: [None]            │
@@ -43,13 +52,29 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VocalParam v1.0.0-prototype")
-        self.setMinimumSize(1200, 700)
+        self.setMinimumSize(1200, 800)
         
-        self._current_project = None
+        self._current_project: ProjectData = None
+        self._current_project_path = None
+        self._current_line: PhoneticLine = None
         self._current_bpm = 120
         self.audio_engine = AudioEngine()
+        self.resource_manager = ResourceManager()
+        self.oto_generator = OtoGenerator(self._current_bpm)
+        
+        # Initialize Database
+        try:
+            self.db = AppDatabase()
+            self._load_recent_projects()
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            self.db = None
         
         self._setup_ui()
+        
+        # Initialize Controller
+        self.editor_controller = EditorController(self.editor_widget, self.parameter_table)
+        
         self._setup_menu()
         self._setup_statusbar()
         self._setup_connections()
@@ -89,14 +114,27 @@ class MainWindow(QMainWindow):
         self.recorder_widget = RecorderWidget(self.audio_engine)
         self.content_stack.addWidget(self.recorder_widget)
         
-        # 2: Editor
+        # 2: Editor Split View (Visual + Table)
+        editor_container = QWidget()
+        editor_layout = QVBoxLayout(editor_container)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        
+        editor_splitter = QSplitter(Qt.Orientation.Vertical)
+        
         self.editor_widget = EditorWidget()
-        self.content_stack.addWidget(self.editor_widget)
+        self.parameter_table = ParameterTableWidget()
+        
+        editor_splitter.addWidget(self.editor_widget)
+        editor_splitter.addWidget(self.parameter_table)
+        editor_splitter.setSizes([500, 200]) # Favor visual editor
+        
+        editor_layout.addWidget(editor_splitter)
+        self.content_stack.addWidget(editor_container)
         
         splitter.addWidget(self.content_stack)
         
-        # Set initial sizes (30% / 70%)
-        splitter.setSizes([300, 700])
+        # Set initial sizes (25% / 75%)
+        splitter.setSizes([300, 900])
         
         layout.addWidget(splitter)
     
@@ -108,19 +146,83 @@ class MainWindow(QMainWindow):
     def _on_line_selected(self, index, line):
         """Handle line selection from reclist."""
         logger.info(f"Line selected: {line.raw_text}")
+        self._current_line = line
         self.recorder_widget.set_line(line)
         self.recorder_widget.set_bpm(self._current_bpm)
         self.content_stack.setCurrentIndex(1)  # Show recorder
     
     def _on_recording_stopped(self, audio_data):
         """Handle recording completion."""
-        if audio_data is not None:
-             logger.info("Received audio data from recorder. Switching to editor.")
-             # Send to editor for analysis
-             self.editor_widget.set_audio_data(audio_data, self.audio_engine._sample_rate)
-             # Update status
-             self.content_stack.setCurrentIndex(2) # Show Editor
-             self.statusbar.showMessage("Grabación completa. Analizando...", 3000)
+        if audio_data is not None and self._current_line:
+             logger.info(f"Received audio data for line: {self._current_line.raw_text}")
+             
+             # 1. Update Project
+             self._update_project_recording(self._current_line, audio_data)
+             
+             # 2. Generate Initial OTO
+             # Use the first segment as the alias for now (prototype limitation)
+             # TODO: Handle multi-segment logic
+             alias = self._current_line.segments[0] if self._current_line.segments else self._current_line.raw_text
+             
+             entry = self.oto_generator.generate_oto(
+                 filename=f"{self._current_line.raw_text}.wav",
+                 audio_data=audio_data,
+                 alias=alias,
+                 count_in_beats=self.recorder_widget.COUNT_IN_BEATS
+             )
+             
+             # 3. Load into Editor
+             self.editor_controller.load_entry(
+                 entry, 
+                 audio_data, 
+                 self.audio_engine._sample_rate
+             )
+             
+             # 4. Switch View
+             self.content_stack.setCurrentIndex(2) # Show Editor Container
+             self.statusbar.showMessage("Grabación analizada. Listos para editar.", 3000)
+
+    def _update_project_recording(self, line, audio_data):
+        """Update or add a recording entry to the current project."""
+        if not self._current_project:
+            return
+            
+        wav_name = f"{line.raw_text}.wav"
+        save_path = Path(self.recorder_widget.path_edit.text()) / wav_name
+        
+        # Calculate hash for integrity
+        try:
+            # We hash the file after it's saved by RecorderWidget
+            # (Wait, actually RecorderWidget._on_accept saves it)
+            # Let's verify it exists
+            if save_path.exists():
+                file_hash = self.resource_manager.calculate_checksum(save_path)
+                
+                from core.models import Recording, RecordingStatus
+                # Find existing or create new
+                existing = next((r for r in self._current_project.recordings if r.line_index == line.index), None)
+                
+                if existing:
+                    existing.filename = wav_name
+                    existing.status = RecordingStatus.RECORDED
+                    existing.duration_ms = len(audio_data) / self.audio_engine._active_sr * 1000
+                    existing.hash = file_hash
+                else:
+                    new_rec = Recording(
+                        line_index=line.index,
+                        filename=wav_name,
+                        status=RecordingStatus.RECORDED,
+                        duration_ms=len(audio_data) / self.audio_engine._active_sr * 1000,
+                        hash=file_hash
+                    )
+                    self._current_project.recordings.append(new_rec)
+                
+                # Update Reclist UI
+                self.reclist_widget.set_line_status(line.index, RecordingStatus.RECORDED)
+                    
+                logger.info(f"Project updated with recording: {wav_name} (Hash: {file_hash[:8]}...)")
+        except Exception as e:
+            logger.error(f"Failed to update project recording: {e}")
     
     def _setup_menu(self):
         """Setup menu bar."""
@@ -245,9 +347,32 @@ class MainWindow(QMainWindow):
             "Proyectos VocalParam (*.vocalproj);;Todos los archivos (*)"
         )
         if filepath:
+            filepath = Path(filepath)
             logger.info(f"Opening project: {filepath}")
-            # TODO: Load project
-            self.statusbar.showMessage(f"Proyecto abierto: {filepath}", 3000)
+            
+            # Check locking
+            if not self.resource_manager.create_lock_file(filepath):
+                QMessageBox.warning(self, "Proyecto Bloqueado", 
+                                  "El proyecto ya parece estar abierto en otra instancia o está bloqueado.")
+                return
+
+            try:
+                project = ProjectRepository.load_project(filepath)
+                self._current_project_path = filepath
+                
+                # Verify resources and Integrity
+                self._verify_project_resources(project, filepath.parent)
+                self._load_project_ui(project)
+                
+                # Start background integrity checks
+                self.resource_manager.set_project_root(filepath.parent)
+                self.resource_manager.start_background_scrubbing()
+                
+                self.statusbar.showMessage(f"Proyecto cargado: {project.project_name}", 3000)
+            except PersistenceError as e:
+                self.resource_manager.release_lock(filepath)
+                QMessageBox.critical(self, "Error al abrir", str(e))
+                logger.error(f"Error opening project: {e}")
     
     def _on_load_reclist(self):
         """Handle load reclist action."""
@@ -259,12 +384,103 @@ class MainWindow(QMainWindow):
             logger.info(f"Loading reclist: {filepath}")
             self.reclist_widget.load_reclist(filepath)
             self.statusbar.showMessage(f"Reclist cargada: {filepath}", 3000)
+
+    def _load_recent_projects(self):
+        """Update recent projects menu (placeholder for full implementation)."""
+        if not self.db:
+            return
+        # In a real app, this would populate a submenu. 
+        # For now, we just log it to verify DB connectivity.
+        recent = self.db.get_recent_projects(limit=5)
+        logger.info(f"Loaded {len(recent)} recent projects from DB")
     
     def _on_save_project(self):
         """Handle save project action."""
+        if not self._current_project:
+            QMessageBox.warning(self, "Guardar", "No hay proyecto abierto.")
+            return
+
         logger.info("Save project requested")
-        # TODO: Implement save
-        self.statusbar.showMessage("Proyecto guardado", 3000)
+        
+        # Loop until saved or cancelled
+        filepath = self._current_project_path if hasattr(self, '_current_project_path') else None
+        
+        if not filepath:
+            filepath, _ = QFileDialog.getSaveFileName(
+                self, "Guardar Proyecto", "",
+                "Proyectos VocalParam (*.vocalproj)"
+            )
+        
+        if filepath:
+            try:
+                # Update metadata
+                self._current_project.last_modified = datetime.now()
+                
+                ProjectRepository.save_project(self._current_project, filepath)
+                self._current_project_path = filepath
+                
+                self.statusbar.showMessage("Proyecto guardado correctamente", 3000)
+            except PersistenceError as e:
+                QMessageBox.critical(self, "Error al guardar", str(e))
+    
+    def _verify_project_resources(self, project: ProjectData, project_dir: Path):
+        """Check if all recordings exist and verify integrity."""
+        missing = []
+        corrupted = []
+        
+        output_dir = Path(project.output_directory)
+        if not output_dir.is_absolute():
+            output_dir = project_dir / output_dir
+            
+        for rec in project.recordings:
+            wav_path = output_dir / rec.filename
+            if not wav_path.exists():
+                # Try smart relinking
+                recovered = self.resource_manager.find_missing_resource(wav_path, [project_dir])
+                if recovered:
+                    rec.filename = os.path.relpath(recovered, output_dir)
+                    logger.info(f"Relinked {rec.filename} to {recovered}")
+                else:
+                    missing.append(rec.filename)
+            elif rec.hash:
+                # Verify integrity
+                current_hash = self.resource_manager.calculate_checksum(wav_path)
+                if current_hash != rec.hash:
+                    corrupted.append(rec.filename)
+                    
+        if missing or corrupted:
+            msg = "Problemas detectados en los recursos:\n"
+            if missing:
+                msg += f"\nFaltantes ({len(missing)}):\n" + "\n".join(missing[:5])
+                if len(missing) > 5: msg += "\n..."
+            if corrupted:
+                msg += f"\nCorruptos/Modificados ({len(corrupted)}):\n" + "\n".join(corrupted[:5])
+                if len(corrupted) > 5: msg += "\n..."
+                
+            QMessageBox.warning(self, "Integridad de Recursos", msg)
+
+    def _load_project_ui(self, project: ProjectData):
+        """Update UI with project data."""
+        self._current_project = project
+        self._current_project_path = getattr(project, 'filepath', None) # Might not be set yet
+        self._current_bpm = project.bpm
+        
+        self.project_label.setText(f"Proyecto: {project.project_name}")
+        self.bpm_label.setText(f"BPM: {project.bpm}")
+        
+        # Load reclist if path exists
+        if project.reclist_path:
+             self.reclist_widget.load_reclist(project.reclist_path)
+             
+        # Load recording statuses into Reclist UI
+        from core.models import RecordingStatus
+        for rec in project.recordings:
+            self.reclist_widget.set_line_status(rec.line_index, rec.status)
+             
+        self.statusbar.showMessage(f"Proyecto {project.project_name} cargado", 3000)
+        """Load recent projects specific logic (placeholder for menu update)."""
+        # This would update the "Open Recent" menu
+        pass
     
     def _on_export(self):
         """Handle export action."""
@@ -291,6 +507,15 @@ class MainWindow(QMainWindow):
             self.audio_engine.save_config()  # Persist selection
             self.statusbar.showMessage("Configuración de audio actualizada", 3000)
     
+    def closeEvent(self, event):
+        """Cleanup on close."""
+        self.resource_manager.stop_background_scrubbing()
+        if self._current_project_path:
+            self.resource_manager.release_lock(Path(self._current_project_path))
+        if hasattr(self, 'db') and self.db:
+            self.db.close()
+        super().closeEvent(event)
+
     def _on_about(self):
         """Show about dialog."""
         QMessageBox.about(

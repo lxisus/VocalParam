@@ -1,95 +1,173 @@
-"""Waveform Canvas - Specialized pyqtgraph widget for audio editing.
+"""Waveform Canvas - Multi-layer audio visualizer.
 
-Supports waveform display, pitch overlay, and surgical manual correction.
+Supports:
+- Spectrogram (Heatmap)
+- Waveform Overlay
+- RMS Envelope
+- Interactive OTO Markers
 """
 
 import pyqtgraph as pg
 from PyQt6.QtCore import pyqtSignal, Qt
 import numpy as np
-from typing import List, Optional
-from core.dsp_analyzer import PitchPoint
+from typing import List, Dict
+
+from core.models import OtoEntry
 from utils.constants import COLORS
 
 class WaveformCanvas(pg.GraphicsLayoutWidget):
-    """Integrated waveform and pitch canvas."""
+    """Surgical audio editor with spectrogram and OTO markers."""
     
-    point_added = pyqtSignal(float, float)  # time_s, freq_hz
+    marker_moved = pyqtSignal(str, float)  # param_name, new_value_ms
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setBackground('#1A1A1A')
         
-        # Audio plot
-        self.p1 = self.addPlot(row=0, col=0)
-        self.p1.showAxis('left', False)
-        self.p1.showAxis('bottom', True)
-        self.p1.setMenuEnabled(False)
-        self.p1.setMouseEnabled(x=True, y=False)
+        # Main Plot
+        self.plot_item = self.addPlot(row=0, col=0)
+        self.plot_item.showAxis('left', False)
+        self.plot_item.showAxis('bottom', True)
+        self.plot_item.setMouseEnabled(x=True, y=False)
+        self.plot_item.hideButtons()
         
-        # Waveform curve
-        self.waveform = self.p1.plot(pen=pg.mkPen('#4A4A4A', width=1))
+        # 1. Spectrogram Layer (Background)
+        self.img_item = pg.ImageItem()
+        self.plot_item.addItem(self.img_item)
         
-        # Pitch curve (overlay on p1)
-        self.pitch_curve = self.p1.plot(pen=pg.mkPen(COLORS['accent_recording'], width=2))
+        # Colormap for spectrogram (Viridis-like)
+        pos = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        color = np.array([
+            [0, 0, 0, 255],       # Black
+            [30, 0, 60, 255],     # Dark Purple
+            [120, 0, 120, 255],   # Purple
+            [255, 100, 0, 255],   # Orange
+            [255, 255, 0, 255]    # Yellow
+        ], dtype=np.ubyte)
+        cmap = pg.ColorMap(pos, color)
+        self.img_item.setLookupTable(cmap.getLookupTable())
         
-        # Manual points scatter
-        self.manual_points = pg.ScatterPlotItem(
-            size=10, 
-            brush=pg.mkBrush(COLORS['success']),
-            pen=pg.mkPen('w')
+        # 2. Waveform Layer (Overlay)
+        self.waveform_curve = self.plot_item.plot(
+            pen=pg.mkPen(color=(255, 255, 255, 100), width=1)
         )
-        self.p1.addItem(self.manual_points)
         
-        # Selection line
-        self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', style=Qt.PenStyle.DashLine))
-        self.p1.addItem(self.v_line)
+        # 3. RMS Envelope (Overlay)
+        self.rms_curve = self.plot_item.plot(
+            pen=pg.mkPen(color=(255, 215, 0, 150), width=2)
+        )
+        
+        # 4. OTO Markers
+        self.markers: Dict[str, pg.InfiniteLine] = {}
+        marker_config = {
+            'offset': (COLORS['offset'], 'Offset'),
+            'overlap': (COLORS['overlap'], 'Overlap'),
+            'preutter': (COLORS['preutter'], 'Preutter'),
+            'consonant': (COLORS['consonant'], 'Consonant'),
+            'cutoff': (COLORS['cutoff'], 'Cutoff')
+        }
+        
+        for name, (color, label) in marker_config.items():
+            line = pg.InfiniteLine(
+                pos=0, 
+                angle=90, 
+                movable=True, 
+                pen=pg.mkPen(color, width=2, style=Qt.PenStyle.SolidLine),
+                hoverPen=pg.mkPen(color, width=3),
+                label=label,
+                labelOpts={'color': color, 'position': 0.9, 'rotateAxis': [1, 0]}
+            )
+            line.sigPositionChanged.connect(
+                lambda p, n=name: self._on_marker_drag(n, p)
+            )
+            self.plot_item.addItem(line)
+            self.markers[name] = line
 
-    def set_waveform(self, data: np.ndarray, sr: int):
-        """Display audio waveform."""
-        if data is None or len(data) == 0:
-            self.waveform.setData([], [])
+        self.sr = 44100
+        self.duration_s = 0.0
+
+    def set_audio_data(self, audio: np.ndarray, sr: int, spectrogram: np.ndarray = None, rms: np.ndarray = None):
+        """Update visualization data."""
+        self.sr = sr
+        self.duration_s = len(audio) / sr
+        
+        # Spectrogram
+        if spectrogram is not None:
+            # Transpose: Time x Freq
+            self.img_item.setImage(spectrogram.T, autoLevels=True)
+            # Scale image to match time (x) and freq bins (y)
+            # We map 0..duration_s on X
+            tr = pg.QtGui.QTransform()
+            tr.scale(self.duration_s / spectrogram.shape[1], 1)
+            self.img_item.setTransform(tr)
+        
+        # Waveform
+        times = np.linspace(0, self.duration_s, len(audio))
+        # Downsample for performance (max 10k points)
+        step = max(1, len(audio) // 10000)
+        # Normalize waveform to fit over spectrogram (e.g., 0 to 100 vertical range?)
+        # Actually spectrogram Y is freq bins. ImageItem fills defined rect.
+        # We need to scale waveform Y to overlay nicely.
+        # Let's assume standardized view range. 0..100? or 0..FreqBins?
+        # Spectrogram shape[0] is frequency bins (1025 for n_fft=2048).
+        max_y = spectrogram.shape[0] if spectrogram is not None else 1.0
+        
+        # Center waveform at mid-height
+        norm_audio = audio / np.max(np.abs(audio) + 1e-6)  # -1..1
+        scaled_audio = (norm_audio * (max_y / 4)) + (max_y / 2)
+        
+        self.waveform_curve.setData(times[::step], scaled_audio[::step])
+        
+        # RMS Envelope
+        if rms is not None:
+             # RMS is usually small, scale it
+            norm_rms = rms / np.max(rms + 1e-6)
+            scaled_rms = norm_rms * (max_y / 2)
+            self.rms_curve.setData(np.linspace(0, self.duration_s, len(rms)), scaled_rms)
+
+        # Reset view
+        self.plot_item.setXRange(0, self.duration_s)
+        self.plot_item.setYRange(0, max_y)
+
+    def set_markers(self, entry: OtoEntry):
+        """Position markers based on OTO entry."""
+        if not entry:
             return
             
-        times = np.linspace(0, len(data) / sr, len(data))
-        # Downsample for performance if needed
-        if len(data) > 10000:
-            ds = len(data) // 10000
-            self.waveform.setData(times[::ds], data[::ds])
-        else:
-            self.waveform.setData(times, data)
-
-    def set_pitch_curve(self, points: List[PitchPoint]):
-        """Display pitch tracking data."""
-        times = [p.time_s for p in points if p.frequency_hz > 0]
-        freqs = [p.frequency_hz for p in points if p.frequency_hz > 0]
+        m = self.markers
+        # Convert ms to seconds
+        base_offset = entry.offset / 1000.0
         
-        # Normalize freqs for overlay (0.0 to 1.0 logic mapped to waveform height)
-        # Actually it's better to keep raw Hz and use a secondary Y axis if needed, 
-        # but for simple overlay we can just scale
-        if freqs:
-            max_f = max(freqs)
-            min_f = min(freqs)
-            scaled_freqs = [(f - min_f) / (max_f - min_f + 1) * 0.8 - 0.4 for f in freqs]
-            self.pitch_curve.setData(times, scaled_freqs)
-            
-            # Show manual points
-            manual_times = [p.time_s for p in points if p.is_manual]
-            manual_freqs = [(p.frequency_hz - min_f) / (max_f - min_f + 1) * 0.8 - 0.4 for p in points if p.is_manual]
-            self.manual_points.setData(manual_times, manual_freqs)
+        m['offset'].setPos(base_offset)
+        m['ch_overlap'] = entry.overlap / 1000.0  # Relative
+        m['overlap'].setPos(base_offset + entry.overlap / 1000.0)
+        
+        m['preutter'].setPos(base_offset + entry.preutter / 1000.0)
+        m['consonant'].setPos(base_offset + entry.consonant / 1000.0)
+        
+        # Cutoff: if negative, from end. if positive, from offset
+        if entry.cutoff < 0:
+            cut_pos = self.duration_s + (entry.cutoff / 1000.0)
         else:
-            self.pitch_curve.setData([], [])
-            self.manual_points.setData([], [])
+            cut_pos = base_offset + (entry.cutoff / 1000.0)
+        m['cutoff'].setPos(cut_pos)
 
-    def mouseClickEvent(self, ev):
-        """Handle manual correction via Ctrl+Click."""
-        if ev.button() == Qt.MouseButton.LeftButton and ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            pos = ev.pos()
-            mouse_point = self.p1.vb.mapSceneToView(pos)
-            
-            # Here we'd need to map the Y coordinate back to Hz
-            # For this prototype, let's just emit the raw coordinates
-            # A real implementation would map the vertical position in the normalized range
-            self.point_added.emit(mouse_point.x(), mouse_point.y())
-            ev.accept()
-        else:
-            super().mouseClickEvent(ev)
+    def _on_marker_drag(self, name: str, line: pg.InfiniteLine):
+        """Handle marker movement and convert to ms."""
+        pos_s = line.value()
+        
+        # Validation: Overlap <= Preutterance (Gold Rule)
+        if name == 'overlap':
+            preutter_pos = self.markers['preutter'].value()
+            if pos_s > preutter_pos:
+                line.setPos(preutter_pos)
+                pos_s = preutter_pos
+        elif name == 'preutter':
+            overlap_pos = self.markers['overlap'].value()
+            if pos_s < overlap_pos:
+                line.setPos(overlap_pos)
+                pos_s = overlap_pos
+                
+        # Convert to ms
+        pos_ms = pos_s * 1000.0
+        self.marker_moved.emit(name, pos_ms)

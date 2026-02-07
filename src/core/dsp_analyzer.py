@@ -97,6 +97,42 @@ class DSPAnalyzer:
             stable_vowels=stable_vowels
         )
 
+
+    def compute_spectrogram(self, audio_data: np.ndarray) -> np.ndarray:
+        """Compute magnitude spectrogram in dB.
+        
+        Using STFT with Hann window (2048) and 75% overlap.
+        Hop length = 512 (approx 11.6ms at 44.1kHz).
+        """
+        stft = librosa.stft(
+            audio_data, 
+            n_fft=2048, 
+            hop_length=512, 
+            window='hann'
+        )
+        magnitude = np.abs(stft)
+        return librosa.amplitude_to_db(magnitude, ref=np.max)
+
+    def detect_transients(self, audio_data: np.ndarray) -> List[float]:
+        """Detect transient attacks for initial offset positioning."""
+        onset_env = librosa.onset.onset_strength(y=audio_data, sr=self.sr)
+        onsets_frames = librosa.onset.onset_detect(
+            onset_envelope=onset_env, 
+            sr=self.sr,
+            backtrack=True
+        )
+        return librosa.frames_to_time(onsets_frames, sr=self.sr).tolist()
+
+    def calculate_rms_envelope(self, audio_data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate RMS envelope for power visualization.
+        
+        Returns:
+            Tuple[times, rms_values]
+        """
+        rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=512)[0]
+        times = librosa.times_like(rms, sr=self.sr, hop_length=512)
+        return times, rms
+
     def _find_stable_regions(self, curve: List[PitchPoint], rms: np.ndarray) -> List[Tuple[float, float]]:
         """Identify regions where pitch and energy are stable (likely vowels)."""
         # Logic for identifying regions with low derivative in pitch and high energy

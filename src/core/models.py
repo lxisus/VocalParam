@@ -115,6 +115,20 @@ class OtoEntry:
             overlap=float(parts[5]),
         )
 
+    def validate(self) -> List[str]:
+        """Validate OTO parameters.
+        
+        Checks:
+        - Overlap <= Preutterance (Gold Rule)
+        
+        Returns:
+            List of error messages.
+        """
+        errors = []
+        if self.overlap > self.preutter:
+            errors.append(f"Overlap ({self.overlap}) cannot be greater than Preutterance ({self.preutter})")
+        return errors
+
 
 @dataclass
 class Recording:
@@ -123,6 +137,7 @@ class Recording:
     filename: str
     status: RecordingStatus = RecordingStatus.PENDING
     duration_ms: float = 0.0
+    hash: Optional[str] = None
     oto_entries: List[OtoEntry] = field(default_factory=list)
 
 
@@ -154,6 +169,7 @@ class ProjectData:
                     "filename": r.filename,
                     "status": r.status.value,
                     "duration_ms": r.duration_ms,
+                    "hash": r.hash,
                     "oto_entries": [
                         {
                             "alias": e.alias,
@@ -177,7 +193,16 @@ class ProjectData:
     
     @classmethod
     def from_dict(cls, data: dict) -> "ProjectData":
-        """Create ProjectData from dictionary."""
+        """Create ProjectData from dictionary with validation.
+        
+        Raises:
+             ValueError: If required fields are missing.
+        """
+        required_fields = ["project_name", "bpm", "reclist_path", "output_directory"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise ValueError(f"Missing required fields in project data: {', '.join(missing)}")
+
         recordings = []
         for r in data.get("recordings", []):
             oto_entries = [
@@ -197,6 +222,7 @@ class ProjectData:
                 filename=r["filename"],
                 status=RecordingStatus(r["status"]),
                 duration_ms=r.get("duration_ms", 0.0),
+                hash=r.get("hash"),
                 oto_entries=oto_entries,
             ))
         
@@ -211,3 +237,24 @@ class ProjectData:
             last_modified=datetime.fromisoformat(metadata.get("last_modified", datetime.now().isoformat())),
             version=metadata.get("version", "1.0.0"),
         )
+
+    def validate(self) -> List[str]:
+        """Validate project data consistency.
+        
+        Returns:
+            List of error messages, empty if valid.
+        """
+        errors = []
+        if not self.project_name:
+            errors.append("Project name cannot be empty")
+        if self.bpm < 40 or self.bpm > 300:
+            errors.append(f"Invalid BPM: {self.bpm}")
+        
+        # Check integrity of recordings
+        for i, rec in enumerate(self.recordings):
+            if not rec.filename:
+                errors.append(f"Recording at index {i} has no filename")
+            if rec.duration_ms < 0:
+                errors.append(f"Invalid duration for {rec.filename}")
+                
+        return errors

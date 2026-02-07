@@ -76,7 +76,8 @@ class WaveformScope(QWidget):
         for i in range(0, len(audio_chunk), step):
             segment = audio_chunk[i:i+step]
             if len(segment) > 0:
-                peaks.append(np.max(np.abs(segment)))
+                # Dynamic Boost (M5.3 Refined): Use 5.0x for visualization
+                peaks.append(np.max(np.abs(segment)) * 5.0)
                 
         if not peaks:
             return
@@ -100,8 +101,7 @@ class WaveformScope(QWidget):
         # Update curve
         # We mirror the data for a "symmetric" waveform look if desired, 
         # but standard scrolling graph is usually just +amplitude
-        # Sensitivity Boost (M5.3): Multiply by 3.0 to make quiet signals visible
-        self.curve.setData(self._data * 3.0)
+        self.curve.setData(self._data)
         
     def clear(self):
         """Reset the waveform to silence."""
