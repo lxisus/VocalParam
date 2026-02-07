@@ -2,6 +2,23 @@
 
 Este documento registra todas las actualizaciones significativas y mejoras técnicas de VocalParam, clasificadas por fases y hitos del Plan Maestro.
 
+## [v1.0.0-prototype] - Febrero 2026 (Sprint 3)
+
+### ✨ Nuevas Funcionalidades
+- **Editor Visual Interactivo**: Implementación de `WaveformCanvas` con soporte para espectrograma STFT (Hann 2048) y envolvente RMS.
+- **Sistema de Marcadores**: 5 marcadores interactivos (Offset, Consonant, Cutoff, Pre-utterance, Overlap) con drag-and-drop sincronizado.
+- **Auto-OTO Híbrido**: Generación automática de parámetros basada en transientes de audio y rejilla de BPM.
+- **Grabación Pro-UX**: Implementación de cuenta regresiva (3-beat count-in) y metrónomo persistente sin interrupciones ("glitch-free").
+- **Garantía de Cola (Right Blank)**: Duración mínima de 4 segundos para asegurar espacio suficiente para la configuración de la nota.
+- **Validación en Tiempo Real**: Bloqueo automático de configuraciones inválidas (Regla de Oro: Overlap > Preutterance).
+
+### 🐛 Correcciones y Refinamientos
+- **Metrónomo Fluido**: Uso de `sd.OutputStream` persistente para eliminar el audio choppy/trabado en Windows.
+- **Sincronización Bidireccional**: Los cambios manuales en la tabla de parámetros actualizan la posición visual del marcador instantáneamente.
+- **Detección de Silencio de Preparación**: El algoritmo de OTO ahora ignora inteligentemente el periodo de "Count-in" para fijar el `Offset` con precisión.
+
+---
+
 ## [v1.0.0-prototype] - Enero 2026
 
 ### ✨ Nuevas Funcionalidades

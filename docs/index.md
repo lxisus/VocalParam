@@ -2,9 +2,9 @@
 
 VocalParam es un sistema de código abierto diseñado para unificar el proceso de grabación y configuración de voicebanks para síntesis vocal (UTAU/OpenUtau).
 
-## Status Quo: Sprint 2 Finalizado
+## Status Quo: Sprint 3 Finalizado (Visual Editor & DSP)
 
-Actualmente el proyecto ha alcanzado un nivel de madurez técnica crítico para la grabación profesional. Hemos resuelto los principales puntos de dolor de hardware y sincronización, permitiendo un flujo de trabajo confiable.
+Actualmente el proyecto ha completado su núcleo visual y de análisis. Contamos con un editor interactivo con espectrograma, sincronización bidireccional y un generador OTO automático inteligente, además de un motor de grabación profesional refinado.
 
 ## Filosofía del Proyecto: El "Zero-Switch"
 
@@ -16,9 +16,10 @@ Nuestra filosofía **Zero-Switch** unifica estas fases:
 
 ## Características Principales
 
-- **Grabación 7-Moras Pro**: Metrónomo de alta precisión y sistema de "mora zero" instantánea.
-- **WaveformScope DSP**: Visualización en tiempo real de la intensidad y calidad del audio capturado.
-- **Auto-Oto Híbrido**: Generación automática de parámetros basándose en BPM y análisis DSP.
+- **Grabación 7-Moras Pro**: Metrónomo de baja latencia con Count-in sónico y visual.
+- **WaveformCanvas Interactivo**: Editor visual con Espectrograma STFT, RMS y drag-and-drop de marcadores.
+- **Auto-Oto Híbrido**: Generación automática de parámetros basándose en BPM y análisis DSP de transientes.
+- **Sincronización Bidireccional**: Edición fluida entre la tabla de parámetros y el visor visual.
 - **Gestión de Recursos**: Control total sobre carpetas de destino y escucha integrada (Play/Listen).
 
 ## Estructura del Proyecto

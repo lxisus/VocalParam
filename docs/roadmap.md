@@ -2,7 +2,7 @@
 
 VocalParam es un proyecto ambicioso que busca redefinir la creación de voicebanks. Este documento detalla nuestra hoja de ruta, los hitos alcanzados y lo que está por venir.
 
-## Estado Actual: v1.0.0-prototype (Sprint 2 en curso)
+## Estado Actual: v1.0.0-prototype (Sprint 3 Completado)
 
 Estamos operando bajo la filosofía **Zero-Switch**, unificando la grabación y parametrización en una sola experiencia técnica de primer nivel.
 
@@ -24,14 +24,17 @@ Estamos operando bajo la filosofía **Zero-Switch**, unificando la grabación y 
 - [x] **Motor de Audio V2**: Gestión segura de hardware (Windows Fix) y headers WAV dinámicos.
 - [x] **Visualización DSP**: WaveformScope de alta precisión con indicadores de nivel.
 - [x] **Sincronización de Tiempo**: Barra de progreso sincronizada en tiempo real (`time.time()`).
+- [x] **Grabación Pro-UX**: Implementación de Count-in y metrónomo persistente "Glitch-free".
 
-### ⚪ Sprint 3: Editor Visual de Parámetros
-- [ ] Implementación de `WaveformCanvas` interactivo.
-- [ ] Manipulación visual de Offset, Overlap, Pre-utterance, Consonant y Cutoff.
-- [ ] Feedback visual en tiempo real del espectrograma.
+### 🟢 Sprint 3: Editor Visual y Auto-OTO (Completado)
+- [x] **WaveformCanvas**: Visualizador interactivo con Espectrograma STFT y RMS.
+- [x] **Sistema de Marcadores**: Controladores visuales sincronizados para los 5 parámetros OTO.
+- [x] **Sincronización Bidireccional**: Tabla de parámetros <-> Editor Visual en tiempo real.
+- [x] **Algoritmo Auto-OTO**: Detección inteligente de transientes para posicionamiento inicial de Offset.
+- [x] **Validación de Reglas**: Implementación de la "Regla de Oro" (Overlap <= Pre-utterance).
 
-### ⚪ Sprint 4: Inteligencia y Automatización
-- [ ] Refinamiento del algoritmo de detección fonética.
+### ⚪ Sprint 4: Inteligencia y Automatización (Siguiente)
+- [ ] Refinamiento del algoritmo de detección fonética (específico por fonema).
 - [ ] Soporte para diferentes idiomas y estilos de grabación.
 - [ ] Herramientas de diagnóstico de calidad vocal.
 
@@ -48,6 +51,8 @@ Estamos operando bajo la filosofía **Zero-Switch**, unificando la grabación y 
 ---
 
 ## Logros Recientes
+- **Febrero 2026**: Finalización del Sprint 3 (Editor Visual y DSP Avanzado).
+- **Febrero 2026**: Implementación del flujo de grabación con Count-in y metrónomo de baja latencia.
 - **Enero 2026**: Implementación del flujo unificado de grabación.
 - **Enero 2026**: Resolución de problemas críticos de hardware de audio en Windows.
 - **Enero 2026**: Lanzamiento de la documentación técnica centralizada.
