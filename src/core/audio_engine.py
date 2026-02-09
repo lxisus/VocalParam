@@ -505,6 +505,27 @@ class AudioEngine:
             
         logger.info(f"Saved audio: {filepath} | {sr}Hz | {ch}ch")
 
+    def load_wav(self, filepath: str) -> tuple[np.ndarray, int]:
+        """Load a WAV file into a numpy array."""
+        try:
+            with wave.open(filepath, 'rb') as wf:
+                params = wf.getparams()
+                data = wf.readframes(params.nframes)
+                audio_int16 = np.frombuffer(data, dtype=np.int16)
+                
+                # Convert to float32 (-1.0 to 1.0) for internal use
+                audio_float32 = audio_int16.astype(np.float32) / 32767.0
+                
+                # Handle stereo if needed (take left channel)
+                if params.nchannels > 1:
+                    audio_float32 = audio_float32.reshape(-1, params.nchannels)[:, 0]
+                    
+                logger.info(f"Loaded audio: {filepath} | {params.framerate}Hz | {params.nchannels}ch")
+                return audio_float32, params.framerate
+        except Exception as e:
+            logger.error(f"Failed to load WAV {filepath}: {e}")
+            raise
+
     def get_devices(self):
         """Return list of available audio devices."""
         return sd.query_devices()

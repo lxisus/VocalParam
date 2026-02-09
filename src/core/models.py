@@ -89,6 +89,7 @@ class OtoEntry:
     cutoff: float
     preutter: float
     overlap: float
+    comment: str = ""
     
     def to_oto_line(self) -> str:
         """Convert to oto.ini format string."""
@@ -96,6 +97,7 @@ class OtoEntry:
             f"{self.filename}={self.alias},"
             f"{self.offset:.1f},{self.consonant:.1f},"
             f"{self.cutoff:.1f},{self.preutter:.1f},{self.overlap:.1f}"
+            f" #{self.comment}" if self.comment else ""
         )
     
     @classmethod
@@ -113,6 +115,7 @@ class OtoEntry:
             cutoff=float(parts[3]),
             preutter=float(parts[4]),
             overlap=float(parts[5]),
+            comment="" # TODO: Parse comment if present
         )
 
     def validate(self) -> List[str]:
@@ -178,6 +181,7 @@ class ProjectData:
                             "cutoff": e.cutoff,
                             "preutter": e.preutter,
                             "overlap": e.overlap,
+                            "comment": e.comment,
                         }
                         for e in r.oto_entries
                     ],
@@ -214,6 +218,7 @@ class ProjectData:
                     cutoff=e["cutoff"],
                     preutter=e["preutter"],
                     overlap=e["overlap"],
+                    comment=e.get("comment", ""),
                 )
                 for e in r.get("oto_entries", [])
             ]

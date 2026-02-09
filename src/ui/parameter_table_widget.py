@@ -44,11 +44,12 @@ class ParameterTableWidget(QTableWidget):
         """Configure table structure."""
         columns = [
             "Alias", 
-            "Offset (ms)", 
-            "Overlap (ms)", 
-            "Preutter (ms)", 
-            "Consonant (ms)", 
-            "Cutoff (ms)",
+            "L. Blank (Offset)", 
+            "Overlap", 
+            "Pre-Utterance", 
+            "Fixed (Consonant)", 
+            "R. Blank (Cutoff)",
+            "Comment",
             "Filename"
         ]
         self.setColumnCount(len(columns))
@@ -57,12 +58,13 @@ class ParameterTableWidget(QTableWidget):
         # Behavior
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.alternatingRowColors()
+        self.setAlternatingRowColors(True)
         
         # Header resize
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # Alias stretches
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive) 
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)  # Comment stretches
         
         # Item changed signal
         self.itemChanged.connect(self._on_item_changed)
@@ -96,23 +98,27 @@ class ParameterTableWidget(QTableWidget):
             # Alias
             self.setItem(row, 0, QTableWidgetItem(entry.alias))
             
-            # Params (Formatted 123.45)
+            # Params (Formatted 123.4)
             self._set_float_item(row, 1, entry.offset)
             self._set_float_item(row, 2, entry.overlap)
             self._set_float_item(row, 3, entry.preutter)
             self._set_float_item(row, 4, entry.consonant)
             self._set_float_item(row, 5, entry.cutoff)
             
+            # Comment
+            self.setItem(row, 6, QTableWidgetItem(entry.comment))
+            
             # Filename (Read-only)
             fn_item = QTableWidgetItem(entry.filename)
             fn_item.setFlags(fn_item.flags() ^ Qt.ItemFlag.ItemIsEditable)
-            self.setItem(row, 6, fn_item)
+            fn_item.setForeground(QColor(COLORS['text_secondary']))
+            self.setItem(row, 7, fn_item)
             
         self._is_updating = False
 
     def _set_float_item(self, row: int, col: int, value: float):
         """Helper to set float item."""
-        item = QTableWidgetItem(f"{value:.2f}")
+        item = QTableWidgetItem(f"{value:.1f}")
         item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.setItem(row, col, item)
 
@@ -123,12 +129,17 @@ class ParameterTableWidget(QTableWidget):
             
         row = item.row()
         col = item.column()
+        entry = self._entries[row]
         
+        # Column 0: Alias
+        if col == 0:
+            entry.alias = item.text()
+            self.parameter_changed.emit(entry)
+            
         # Columns 1-5 are parameters
-        if 1 <= col <= 5:
+        elif 1 <= col <= 5:
             try:
                 new_val = float(item.text())
-                entry = self._entries[row]
                 
                 # Update model
                 if col == 1: entry.offset = new_val
@@ -137,15 +148,16 @@ class ParameterTableWidget(QTableWidget):
                 elif col == 4: entry.consonant = new_val
                 elif col == 5: entry.cutoff = new_val
                 
-                # Validation check could happen here or in controller
                 self.parameter_changed.emit(entry)
                 
             except ValueError:
                 # Revert if invalid
-                # This requires finding what the value was, which is tricky without storing it.
-                # For now let's just let it be or set to 0.0?
-                # Ideally read from model again.
-                pass
+                self.update_entry(entry)
+        
+        # Column 6: Comment
+        elif col == 6:
+            entry.comment = item.text()
+            self.parameter_changed.emit(entry)
 
     def _on_selection_changed(self):
         """Emit signal when user selects a row."""
@@ -156,19 +168,31 @@ class ParameterTableWidget(QTableWidget):
                 self.row_selected.emit(self._entries[row])
 
     def update_entry(self, entry: OtoEntry):
-        """Update a specific entry in the table when it changes externally."""
-        # Find row by entry identity or alias?
-        # Assuming entries list matches table rows 1:1
+        """Update or add a single entry in the table."""
         try:
             row = self._entries.index(entry)
-            self._is_updating = True
-            
-            self._set_float_item(row, 1, entry.offset)
-            self._set_float_item(row, 2, entry.overlap)
-            self._set_float_item(row, 3, entry.preutter)
-            self._set_float_item(row, 4, entry.consonant)
-            self._set_float_item(row, 5, entry.cutoff)
-            
-            self._is_updating = False
         except ValueError:
-            pass
+            # If not in the list, add it
+            row = self.rowCount()
+            self.insertRow(row)
+            self._entries.append(entry)
+            
+            # Initial setup for new row (Alias and Filename)
+            self._is_updating = True
+            self.setItem(row, 0, QTableWidgetItem(entry.alias))
+            self.setItem(row, 6, QTableWidgetItem(entry.comment))
+            
+            fn_item = QTableWidgetItem(entry.filename)
+            fn_item.setFlags(fn_item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+            fn_item.setForeground(QColor(COLORS['text_secondary']))
+            self.setItem(row, 7, fn_item)
+            self._is_updating = False
+
+        # Update params
+        self._is_updating = True
+        self._set_float_item(row, 1, entry.offset)
+        self._set_float_item(row, 2, entry.overlap)
+        self._set_float_item(row, 3, entry.preutter)
+        self._set_float_item(row, 4, entry.consonant)
+        self._set_float_item(row, 5, entry.cutoff)
+        self._is_updating = False

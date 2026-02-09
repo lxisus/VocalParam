@@ -7,7 +7,7 @@ Based on Section 9.2 layout specification.
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QMenuBar, QMenu, QStatusBar, QSplitter, QLabel,
-    QFileDialog, QMessageBox, QStackedWidget
+    QFileDialog, QMessageBox, QStackedWidget, QPushButton
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
@@ -23,8 +23,9 @@ from controllers.editor_controller import EditorController
 from core.audio_engine import AudioEngine
 from core.persistence import ProjectRepository, AppDatabase, PersistenceError
 from core.resource_manager import ResourceManager
-from core.models import ProjectData
+from core.models import ProjectData, OtoEntry
 from core.oto_generator import OtoGenerator
+from ui.project_dialog import ProjectDialog
 from utils.constants import COLORS
 from utils.logger import get_logger
 
@@ -142,6 +143,18 @@ class MainWindow(QMainWindow):
         """Connect signals and slots."""
         self.reclist_widget.line_selected.connect(self._on_line_selected)
         self.recorder_widget.recording_stopped.connect(self._on_recording_stopped)
+        
+        # Connection from Editor Table to loading audio
+        self.parameter_table.row_selected.connect(self._on_editor_row_selected)
+        
+        # New: Auto-save on edits (non-explicit)
+        self.editor_controller.project_updated.connect(lambda: self._on_save_project(explicit=False))
+        
+        # New: Direct Editor Access
+        self.btn_goto_editor = QPushButton("✏ Editor Global")
+        self.btn_goto_editor.setStyleSheet(f"background-color: {COLORS['accent_primary']}; font-weight: bold; padding: 5px;")
+        self.btn_goto_editor.clicked.connect(self._on_goto_editor)
+        self.reclist_widget.layout().addWidget(self.btn_goto_editor)
     
     def _on_line_selected(self, index, line):
         """Handle line selection from reclist."""
@@ -149,6 +162,15 @@ class MainWindow(QMainWindow):
         self._current_line = line
         self.recorder_widget.set_line(line)
         self.recorder_widget.set_bpm(self._current_bpm)
+        
+        # Set default output path for recorded audio if project exists
+        if self._current_project:
+            project_dir = self._current_project_path.parent if self._current_project_path else Path(".")
+            output_dir = Path(self._current_project.output_directory)
+            if not output_dir.is_absolute():
+                output_dir = project_dir / output_dir
+            self.recorder_widget.path_edit.setText(str(output_dir))
+            
         self.content_stack.setCurrentIndex(1)  # Show recorder
     
     def _on_recording_stopped(self, audio_data):
@@ -156,8 +178,18 @@ class MainWindow(QMainWindow):
         if audio_data is not None and self._current_line:
              logger.info(f"Received audio data for line: {self._current_line.raw_text}")
              
-             # 1. Update Project
-             self._update_project_recording(self._current_line, audio_data)
+             # 1. Check for Project
+             if not self._current_project:
+                 res = QMessageBox.question(self, "Proyecto Requerido", 
+                     "La grabación se ha guardado localmente, pero no hay un proyecto abierto para organizar la metadata.\n\n"
+                     "¿Desea crear un proyecto nuevo ahora?",
+                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                 if res == QMessageBox.StandardButton.Yes:
+                     self._on_new_project()
+             
+             # 2. Update Project (if it was created or already existed)
+             if self._current_project:
+                 self._update_project_recording(self._current_line, audio_data)
              
              # 2. Generate Initial OTO
              # Use the first segment as the alias for now (prototype limitation)
@@ -181,6 +213,51 @@ class MainWindow(QMainWindow):
              # 4. Switch View
              self.content_stack.setCurrentIndex(2) # Show Editor Container
              self.statusbar.showMessage("Grabación analizada. Listos para editar.", 3000)
+
+    def _on_goto_editor(self):
+        """Switch to editor view manually."""
+        # Load all project recordings into the table if project exists
+        if self._current_project:
+            all_entries = []
+            for rec in self._current_project.recordings:
+                all_entries.extend(rec.oto_entries)
+            self.parameter_table.set_entries(all_entries)
+            self.statusbar.showMessage("Cargadas todas las grabaciones en el Editor.", 3000)
+        else:
+            self.parameter_table.set_entries([])
+            self.statusbar.showMessage("Abierto Editor (Sin Proyecto)", 3000)
+            
+        self.content_stack.setCurrentIndex(2)
+
+    def _on_editor_row_selected(self, entry: OtoEntry):
+        """Handle selection of a row in the global parameter table."""
+        if not self._current_project:
+            return
+            
+        # Find the recording that contains this entry
+        recording = next((r for r in self._current_project.recordings if entry in r.oto_entries), None)
+        if not recording:
+            logger.warning(f"No recording found for alias: {entry.alias}")
+            return
+            
+        # Load audio file
+        project_dir = self._current_project_path.parent if self._current_project_path else Path(".")
+        output_dir = Path(self._current_project.output_directory)
+        if not output_dir.is_absolute():
+            output_dir = project_dir / output_dir
+            
+        wav_path = output_dir / recording.filename
+        
+        if wav_path.exists():
+            try:
+                audio_data, sr = self.audio_engine.load_wav(str(wav_path))
+                self.editor_controller.load_entry(entry, audio_data, sr)
+                self.statusbar.showMessage(f"Cargado: {entry.alias}", 2000)
+            except Exception as e:
+                logger.error(f"Failed to load audio for editor: {e}")
+                self.statusbar.showMessage(f"Error al cargar audio: {recording.filename}", 3000)
+        else:
+            self.statusbar.showMessage(f"Archivo no encontrado: {recording.filename}", 3000)
 
     def _update_project_recording(self, line, audio_data):
         """Update or add a recording entry to the current project."""
@@ -336,9 +413,32 @@ class MainWindow(QMainWindow):
     
     def _on_new_project(self):
         """Handle new project action."""
-        logger.info("New project requested")
-        # TODO: Implement new project dialog
-        self.statusbar.showMessage("Crear nuevo proyecto...", 3000)
+        dialog = ProjectDialog(self)
+        if dialog.exec() == ProjectDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            if not data: return
+            
+            # Create Project Model
+            project = ProjectData(
+                project_name=data["name"],
+                bpm=data["bpm"],
+                reclist_path=data["reclist"],
+                output_directory=data["output"]
+            )
+            
+            try:
+                # Save immediately
+                ProjectRepository.save_project(project, data["save_path"])
+                self._current_project_path = Path(data["save_path"])
+                self._load_project_ui(project)
+                
+                # Setup Resource Manager
+                self.resource_manager.set_project_root(self._current_project_path.parent)
+                
+                QMessageBox.information(self, "Proyecto Creado", f"El proyecto '{project.project_name}' ha sido creado exitosamente.")
+            except Exception as e:
+                logger.error(f"Failed to create project: {e}")
+                QMessageBox.critical(self, "Error", f"No se pudo crear el proyecto:\n{e}")
     
     def _on_open_project(self):
         """Handle open project action."""
@@ -394,34 +494,48 @@ class MainWindow(QMainWindow):
         recent = self.db.get_recent_projects(limit=5)
         logger.info(f"Loaded {len(recent)} recent projects from DB")
     
-    def _on_save_project(self):
-        """Handle save project action."""
+    def _on_save_project(self, explicit=True):
+        """Handle save project action.
+        
+        Args:
+            explicit: If True, show dialogs and errors. If False (auto-save), be silent 
+                     unless a critical error occurs and only if a path is already set.
+        """
         if not self._current_project:
-            QMessageBox.warning(self, "Guardar", "No hay proyecto abierto.")
+            if explicit:
+                QMessageBox.warning(self, "Guardar", "Primero debe crear o abrir un proyecto.")
             return
 
-        logger.info("Save project requested")
+        # Get existing path
+        filepath = self._current_project_path
         
-        # Loop until saved or cancelled
-        filepath = self._current_project_path if hasattr(self, '_current_project_path') else None
-        
-        if not filepath:
+        # If no path and user clicked Save, ask for one
+        if not filepath and explicit:
             filepath, _ = QFileDialog.getSaveFileName(
                 self, "Guardar Proyecto", "",
                 "Proyectos VocalParam (*.vocalproj)"
             )
-        
-        if filepath:
+            if filepath:
+                self._current_project_path = Path(filepath)
+            else:
+                return # User cancelled
+
+        # Only proceed if we have a path
+        if self._current_project_path:
             try:
                 # Update metadata
                 self._current_project.last_modified = datetime.now()
                 
-                ProjectRepository.save_project(self._current_project, filepath)
-                self._current_project_path = filepath
+                ProjectRepository.save_project(self._current_project, self._current_project_path)
                 
-                self.statusbar.showMessage("Proyecto guardado correctamente", 3000)
+                if explicit:
+                    self.statusbar.showMessage("Proyecto guardado correctamente", 3000)
+                else:
+                    self.statusbar.showMessage("Proyecto auto-guardado", 1000)
             except PersistenceError as e:
-                QMessageBox.critical(self, "Error al guardar", str(e))
+                logger.error(f"Error saving project: {e}")
+                if explicit:
+                    QMessageBox.critical(self, "Error al guardar", str(e))
     
     def _verify_project_resources(self, project: ProjectData, project_dir: Path):
         """Check if all recordings exist and verify integrity."""
@@ -462,7 +576,8 @@ class MainWindow(QMainWindow):
     def _load_project_ui(self, project: ProjectData):
         """Update UI with project data."""
         self._current_project = project
-        self._current_project_path = getattr(project, 'filepath', None) # Might not be set yet
+        # Note: self._current_project_path must be set before calling this 
+        # as ProjectData doesn't store its own file path.
         self._current_bpm = project.bpm
         
         self.project_label.setText(f"Proyecto: {project.project_name}")

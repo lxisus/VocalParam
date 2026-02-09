@@ -8,9 +8,9 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QSplitter
+    QPushButton, QSplitter, QLineEdit
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 
 from core.models import OtoEntry
 from utils.constants import COLORS
@@ -28,10 +28,15 @@ class EditorWidget(QWidget):
     next_requested = pyqtSignal()
     prev_requested = pyqtSignal()
     
+    # Request to set marker at current playhead or mouse
+    marker_set_requested = pyqtSignal(str) # param_name
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_entry: Optional[OtoEntry] = None
         
+        # Enable focus for keyboard shortcuts
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._setup_ui()
         
     def _setup_ui(self):
@@ -46,7 +51,24 @@ class EditorWidget(QWidget):
             font-weight: bold; 
             color: {COLORS['text_primary']};
         """)
-        layout.addWidget(self.label_alias)
+        
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(self.label_alias)
+        header_layout.addStretch()
+        
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("🔍 Buscar grabación...")
+        self.search_bar.setFixedWidth(200)
+        self.search_bar.setStyleSheet(f"""
+            background-color: #2D2D2D;
+            color: white;
+            border: 1px solid #3D3D3D;
+            border-radius: 4px;
+            padding: 4px;
+        """)
+        header_layout.addWidget(self.search_bar)
+        
+        layout.addLayout(header_layout)
         
         # Canvas
         self.canvas = WaveformCanvas()
@@ -83,3 +105,20 @@ class EditorWidget(QWidget):
     def set_audio_data(self, audio: np.ndarray, sr: int, spectrogram: np.ndarray = None, rms: np.ndarray = None):
         """Pass audio data to canvas."""
         self.canvas.set_audio_data(audio, sr, spectrogram, rms)
+
+    def keyPressEvent(self, event):
+        """Handle global editor shortcuts."""
+        key = event.key()
+        
+        if key == Qt.Key.Key_F1:
+            self.marker_set_requested.emit('offset')
+        elif key == Qt.Key.Key_F2:
+            self.marker_set_requested.emit('overlap')
+        elif key == Qt.Key.Key_F3:
+            self.marker_set_requested.emit('preutter')
+        elif key == Qt.Key.Key_F4:
+            self.marker_set_requested.emit('consonant')
+        elif key == Qt.Key.Key_F5:
+            self.marker_set_requested.emit('cutoff')
+        else:
+            super().keyPressEvent(event)
