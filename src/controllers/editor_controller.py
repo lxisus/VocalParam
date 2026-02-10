@@ -93,7 +93,10 @@ class EditorController(QObject):
     def _on_table_changed(self, entry: OtoEntry):
         """Handle value change from Table."""
         if entry is self.current_entry:
+            # Update canvas visuals to match new table values
             self.editor.set_entry(entry)
+            # Notify that data has changed (triggers autosave/UI update)
+            self.project_updated.emit()
 
     @pyqtSlot(OtoEntry)
     def _on_table_selection(self, entry: OtoEntry):

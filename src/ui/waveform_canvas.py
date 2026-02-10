@@ -60,11 +60,11 @@ class WaveformCanvas(pg.GraphicsLayoutWidget):
         # 4. OTO Markers
         self.markers: Dict[str, pg.InfiniteLine] = {}
         marker_config = {
-            'offset': (COLORS['offset'], 'Left Blank'),
-            'overlap': (COLORS['overlap'], 'Overlap'),
-            'preutter': (COLORS['preutter'], 'Preutter'),
-            'consonant': (COLORS['consonant'], 'Fixed'),
-            'cutoff': (COLORS['cutoff'], 'Right Blank')
+            'offset': ("#858585", 'LeftBlank'),
+            'overlap': ("#1FFF00", 'Overlap'),
+            'preutter': ("#FF0000", 'Preutter'),
+            'consonant': ("#00C8FF", 'Consonant'),
+            'cutoff': ("#858585", 'RightBlank')
         }
         
         for name, (color, label) in marker_config.items():
@@ -85,6 +85,17 @@ class WaveformCanvas(pg.GraphicsLayoutWidget):
 
         self.sr = 44100
         self.duration_s = 0.0
+        self._prev_preutter_pos = 0.0
+        self._is_updating_markers = False
+        
+        # 5. Root Indicator (Red Triangle)
+        self.root_indicator = pg.ScatterPlotItem(
+            size=15, 
+            brush=pg.mkBrush(255, 0, 0),
+            pen=pg.mkPen(None),
+            symbol='t'  # Inverted triangle
+        )
+        self.plot_item.addItem(self.root_indicator)
 
     def set_audio_data(self, audio: np.ndarray, sr: int, spectrogram: np.ndarray = None, rms: np.ndarray = None):
         """Update visualization data."""
@@ -134,39 +145,88 @@ class WaveformCanvas(pg.GraphicsLayoutWidget):
         if not entry:
             return
             
-        m = self.markers
-        # Convert ms to seconds
-        base_offset = entry.offset / 1000.0
+        # BLOCK SIGNALS: Prevent recursive loops between Canvas -> Controller -> Table -> Canvas
+        self._is_updating_markers = True
         
-        m['offset'].setPos(base_offset)
-        m['ch_overlap'] = entry.overlap / 1000.0  # Relative
-        m['overlap'].setPos(base_offset + entry.overlap / 1000.0)
-        
-        m['preutter'].setPos(base_offset + entry.preutter / 1000.0)
-        m['consonant'].setPos(base_offset + entry.consonant / 1000.0)
-        
-        # Cutoff: if negative, from end. if positive, from offset
-        if entry.cutoff < 0:
-            cut_pos = self.duration_s + (entry.cutoff / 1000.0)
-        else:
-            cut_pos = base_offset + (entry.cutoff / 1000.0)
-        m['cutoff'].setPos(cut_pos)
+        try:
+            m = self.markers
+            # Convert ms to seconds
+            base_offset = entry.offset / 1000.0
+            
+            m['offset'].setPos(base_offset)
+            m['overlap'].setPos(base_offset + entry.overlap / 1000.0)
+            
+            m['preutter'].setPos(base_offset + entry.preutter / 1000.0)
+            self._prev_preutter_pos = m['preutter'].value()
+            
+            m['consonant'].setPos(base_offset + entry.consonant / 1000.0)
+            
+            # Cutoff: if negative, from end. if positive, from offset
+            if entry.cutoff < 0:
+                cut_pos = self.duration_s + (entry.cutoff / 1000.0)
+            else:
+                cut_pos = base_offset + (entry.cutoff / 1000.0)
+            m['cutoff'].setPos(cut_pos)
+            
+            # Update Root Indicator position
+            self._update_root_indicator(m['preutter'].value())
+        finally:
+            self._is_updating_markers = False
+
+    def _update_root_indicator(self, x_pos: float):
+        """Update the position of the Pre-utterance root triangle."""
+        # Position triangle at the top of the plot area
+        view_range = self.plot_item.viewRange()
+        y_max = view_range[1][1]
+        self.root_indicator.setData(x=[x_pos], y=[y_max])
 
     def _on_marker_drag(self, name: str, line: pg.InfiniteLine):
         """Handle marker movement and convert to ms."""
+        if self._is_updating_markers:
+            return
+
         pos_s = line.value()
         
+        # Root Dragging Mechanic: If Pre-utterance moves, move EVERYTHING
+        if name == 'preutter':
+            delta = pos_s - self._prev_preutter_pos
+            self._prev_preutter_pos = pos_s
+            
+            self._is_updating_markers = True
+            
+            # 1. Update all positions visually
+            for m_name, m_line in self.markers.items():
+                if m_name != 'preutter':
+                    new_pos = m_line.value() + delta
+                    m_line.setPos(new_pos)
+            
+            # 2. Emit 'offset' FIRST. This is critical because others are relative to it in the model.
+            self.marker_moved.emit('offset', self.markers['offset'].value() * 1000.0)
+            
+            # 3. Emit others
+            for m_name in ['overlap', 'preutter', 'consonant', 'cutoff']:
+                self.marker_moved.emit(m_name, self.markers[m_name].value() * 1000.0)
+            
+            self._is_updating_markers = False
+            self._update_root_indicator(pos_s)
+            return # Avoid double-emitting for preutter at the end
+
         # Validation: Overlap <= Preutterance (Gold Rule)
-        if name == 'overlap':
-            preutter_pos = self.markers['preutter'].value()
-            if pos_s > preutter_pos:
-                line.setPos(preutter_pos)
-                pos_s = preutter_pos
-        elif name == 'preutter':
-            overlap_pos = self.markers['overlap'].value()
-            if pos_s < overlap_pos:
-                line.setPos(overlap_pos)
-                pos_s = overlap_pos
+        # Only enforced if not multi-dragging or if specifically dragging overlap/preutter
+        if not self._is_updating_markers:
+            if name == 'overlap':
+                preutter_pos = self.markers['preutter'].value()
+                if pos_s > preutter_pos:
+                    line.setPos(preutter_pos)
+                    pos_s = preutter_pos
+            elif name == 'preutter':
+                overlap_pos = self.markers['overlap'].value()
+                if pos_s < overlap_pos:
+                    line.setPos(overlap_pos)
+                    pos_s = overlap_pos
+                    # Re-sync if clamped
+                    self._update_root_indicator(pos_s)
+                    self._prev_preutter_pos = pos_s
                 
         # Convert to ms
         pos_ms = pos_s * 1000.0
