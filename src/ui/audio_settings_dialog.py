@@ -253,12 +253,18 @@ class AudioSettingsDialog(QDialog):
                 if self.input_combo.itemData(i)['index'] == self.engine.input_device:
                     self.input_combo.setCurrentIndex(i)
                     break
-        self._on_input_changed()
         if self.engine.output_device is not None:
             for i in range(self.output_combo.count()):
                 if self.output_combo.itemData(i)['index'] == self.engine.output_device:
                     self.output_combo.setCurrentIndex(i)
                     break
+        
+        self._on_input_changed()
+        
+        # Select current Sample Rate correctly
+        index = self.sr_combo.findData(self.engine._sample_rate)
+        if index >= 0:
+            self.sr_combo.setCurrentIndex(index)
 
     def _refresh_all(self):
         self._load_all_devices()
@@ -310,4 +316,9 @@ class AudioSettingsDialog(QDialog):
     def get_selected_devices(self):
         in_data = self.input_combo.currentData()
         out_data = self.output_combo.currentData()
-        return (in_data['index'] if in_data else None, out_data['index'] if out_data else None)
+        sample_rate = self.sr_combo.currentData()
+        return (
+            in_data['index'] if in_data else None, 
+            out_data['index'] if out_data else None,
+            sample_rate if sample_rate else self.engine._sample_rate
+        )

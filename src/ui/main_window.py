@@ -636,13 +636,14 @@ class MainWindow(QMainWindow):
         self.statusbar.showMessage("Generando oto.ini...", 3000)
     
     def _on_audio_settings(self):
-        """Show audio hardware configuration."""
+        """Show audio hardware configuration and apply settings."""
         dialog = AudioSettingsDialog(self.audio_engine, self)
         if dialog.exec() == AudioSettingsDialog.DialogCode.Accepted:
-            input_idx, output_idx = dialog.get_selected_devices()
+            input_idx, output_idx, sr = dialog.get_selected_devices()
             self.audio_engine.set_devices(input_idx, output_idx)
-            self.audio_engine.save_config()  # Persist selection
-            self.statusbar.showMessage("Configuración de audio actualizada", 3000)
+            self.audio_engine.set_sample_rate(sr) # This also regenerates clicks
+            self.audio_engine.save_config() 
+            self.statusbar.showMessage(f"Configuración actualizada: {sr}Hz", 3000)
     
     def closeEvent(self, event):
         """Cleanup on close."""

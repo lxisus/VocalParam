@@ -46,15 +46,20 @@ class AudioEngine:
         self._is_closing = False
         self._stream_lock = threading.Lock()
         
-        # Pre-generate click sound (1000Hz sine for 50ms)
-        self._click_sample = self._generate_click(1000, 0.05, 0.2)
-        self._click_accent = self._generate_click(1500, 0.05, 0.3)
-        self._click_countin = self._generate_click(800, 0.05, 0.2) # Lower pitch for count-in
-        self._test_tone = self._generate_click(440, 0.5, 0.3)  # A4 note for test
+        # Pre-generate professional metronome clicks with ADSR envelope
+        self._click_sample = self._generate_professional_click(1500, 0.012, 0.25)  # Normal click
+        self._click_accent = self._generate_professional_click(2000, 0.012, 0.35)  # Accent click
+        self._click_countin = self._generate_professional_click(1000, 0.012, 0.20)  # Count-in click
+        self._test_tone = self._generate_click(440, 0.5, 0.3)  # A4 note for test (keep simple for testing)
         
         # Oscilloscope buffer (last 2048 samples)
         self._scope_buffer_size = 2048
         self._scope_buffer = np.zeros(self._scope_buffer_size, dtype=np.float32)
+        
+        # Click playback state for Duplex Stream
+        self._click_to_play: Optional[np.ndarray] = None
+        self._click_ptr = 0
+        self._click_lock = threading.Lock()
         
         # Database for config
         self.db = AppDatabase()
@@ -77,12 +82,12 @@ class AudioEngine:
         config = {
             "input_device_name": input_name,
             "output_device_name": output_name,
-            "sample_rate": self._active_sr,
-            "channels": self._active_channels
+            "sample_rate": self._sample_rate, # Persistence: Save user INTENT, not matching hardware result
+            "channels": self._channels
         }
         
         self.db.set_setting("audio_config", config)
-        logger.info("Audio config saved to database")
+        logger.info(f"Audio config saved: {input_name} | {output_name} | {self._sample_rate}Hz")
 
     def load_config(self):
         """Load hardware selection by name to handle index changes."""
@@ -93,8 +98,10 @@ class AudioEngine:
         try:
             in_name = config.get("input_device_name")
             out_name = config.get("output_device_name")
-            self._active_sr = config.get("sample_rate", SAMPLE_RATE)
+            self._sample_rate = config.get("sample_rate", SAMPLE_RATE)
+            self._active_sr = self._sample_rate 
             self._active_channels = config.get("channels", CHANNELS)
+            self._channels = self._active_channels
             
             # Map names back to current indices
             devices = self.get_device_list()
@@ -167,6 +174,13 @@ class AudioEngine:
         self.output_device = output_idx
         logger.info(f"Devices set - Input: {input_idx}, Output: {output_idx}")
 
+    def set_sample_rate(self, sr: int):
+        """Set the desired sample rate and trigger click regeneration."""
+        self._sample_rate = sr
+        self._active_sr = sr
+        self._regenerate_clicks()
+        logger.info(f"AudioEngine Sample Rate set to {sr}Hz")
+
     def check_device_capabilities(self, device_id: int) -> dict:
         """Validate sample rates for a specific device."""
         results = {}
@@ -202,156 +216,179 @@ class AudioEngine:
             return score
 
     def _generate_click(self, freq: float, duration: float, volume: float) -> np.ndarray:
-        """Generate a click sample."""
+        """Generate a simple click sample (used for test tones)."""
         t = np.linspace(0, duration, int(self._sample_rate * duration), False)
         # Sine wave + fade out to avoid clicks
         click = np.sin(freq * t * 2 * np.pi) * volume
         fade_out = np.linspace(1, 0, len(click))
         return (click * fade_out).astype(np.float32)
+    
+    def _generate_professional_click(self, freq: float, duration: float, volume: float) -> np.ndarray:
+        """Generate a professional metronome click with ADSR envelope.
+        
+        Creates a clean, percussive click sound suitable for musical timing.
+        Uses exponential decay for natural sound and adds slight noise for character.
+        
+        Args:
+            freq: Fundamental frequency in Hz (1000-2000 recommended)
+            duration: Total duration in seconds (0.010-0.015 recommended)
+            volume: Peak amplitude 0.0-1.0
+            
+        Returns:
+            Float32 audio sample with ADSR envelope
+        """
+        n_samples = int(self._sample_rate * duration)
+        t = np.linspace(0, duration, n_samples, False)
+        
+        # Generate base sine wave
+        sine = np.sin(freq * t * 2 * np.pi)
+        
+        # Add slight noise component for "woodblock" character (5% mix)
+        noise = np.random.randn(n_samples) * 0.05
+        signal = sine + noise
+        
+        # ADSR Envelope
+        attack_samples = int(n_samples * 0.05)   # 5% attack (very fast)
+        decay_samples = int(n_samples * 0.15)    # 15% decay
+        release_start = int(n_samples * 0.70)    # Release starts at 70%
+        
+        envelope = np.ones(n_samples)
+        
+        # Attack: Quick ramp up
+        if attack_samples > 0:
+            envelope[:attack_samples] = np.linspace(0, 1, attack_samples)
+        
+        # Decay: Exponential decay to sustain level (0.6)
+        if decay_samples > 0:
+            decay_end = attack_samples + decay_samples
+            envelope[attack_samples:decay_end] = 1.0 - (1.0 - 0.6) * (1 - np.exp(-3 * np.linspace(0, 1, decay_samples)))
+        
+        # Sustain: Hold at 0.6
+        envelope[attack_samples + decay_samples:release_start] = 0.6
+        
+        # Release: Exponential fade out
+        release_samples = n_samples - release_start
+        if release_samples > 0:
+            envelope[release_start:] = 0.6 * np.exp(-5 * np.linspace(0, 1, release_samples))
+        
+        # Apply envelope and volume
+        click = signal * envelope * volume
+        
+        # Normalize to prevent clipping
+        max_val = np.max(np.abs(click))
+        if max_val > 0:
+            click = click / max_val * volume
+        return click.astype(np.float32)
 
     def start_output_stream(self):
-        """Start a persistent output stream for low-latency metronome."""
-        if self._output_stream:
-            return
-            
-        try:
-            self._output_stream = sd.OutputStream(
-                samplerate=self._active_sr,
-                device=self.output_device,
-                channels=1 # Mono click
-            )
-            self._output_stream.start()
-        except Exception as e:
-            logger.error(f"Failed to start output stream: {e}")
+        """Legacy method stub. Duplex mode handles this internally during recording."""
+        pass
 
     def stop_output_stream(self):
-        """Stop the persistent output stream."""
-        if self._output_stream:
-            try:
-                self._output_stream.stop()
-                self._output_stream.close()
-            except Exception as e:
-                logger.error(f"Error closing output stream: {e}")
-            finally:
-                self._output_stream = None
+        """Legacy method stub."""
+        pass
 
     def play_click(self, accent: bool = False, countin: bool = False):
-        """Play the metronome click sound."""
-        if countin:
-            sample = self._click_countin
-        else:
-            sample = self._click_accent if accent else self._click_sample
+        """Arm a click sound to be played with sample-level precision in the duplex callback.
+        
+        If not recording, uses a standard non-blocking playback fallback.
+        """
+        sample = self._click_countin if countin else (self._click_accent if accent else self._click_sample)
             
-        # Use persistent stream if available for glitch-free audio
-        if self._output_stream and self._output_stream.active:
+        with self._click_lock:
+            # Arm for Duplex callback
+            self._click_to_play = sample
+            self._click_ptr = 0
+            
+        # Preview Fallback: If the duplex stream isn't active, play directly
+        if not self._is_recording:
             try:
-                # Pad to buffer size if needed, or write directly
-                # sd.OutputStream.write expects C-contiguous array
-                self._output_stream.write(sample)
+                # Use a new thread for non-blocking preview to avoid UI freeze
+                sd.play(sample, self._active_sr, device=self.output_device, blocking=False)
             except Exception as e:
-                logger.error(f"Stream write error: {e}")
-        else:
-            # Fallback for preview/test
-            try:
-                sd.play(sample, self._active_sr, device=self.output_device)
-            except Exception as e:
-                logger.error(f"Error playing click: {e}")
+                logger.warning(f"Metronome preview failed (Device likely busy by another app): {e}")
 
     def play_audio(self, data: np.ndarray):
-        """Play back a given audio buffer."""
-        if data is None or len(data) == 0:
-            logger.warning("Attempted to play empty audio buffer")
-            return
-            
+        """Play back audio buffer with robust device handling."""
+        if data is None or len(data) == 0: return
         try:
-            sd.play(data, self._active_sr, device=self.output_device)
+            sr = self._active_sr if self._active_sr else SAMPLE_RATE
+            sd.play(data, sr, device=self.output_device)
         except Exception as e:
-            logger.error(f"Error playing audio: {e}")
+            logger.error(f"Playback failed. Check if another app (YouTube/Spotify) is using the device in Exclusive Mode: {e}")
 
     def stop_audio(self):
         """Stop any current playback."""
-        try:
-            sd.stop()
-        except Exception as e:
-            logger.error(f"Error stopping audio: {e}")
+        try: sd.stop()
+        except: pass
 
-    def play_test_sound(self, device_id: Optional[int] = None):
-        """Play a short test tone to verify output."""
     def stop_monitoring(self):
-        """Stop input level monitoring."""
+        """Stop input level monitoring and release device synchronously."""
         self._is_monitoring = False
-        if self._monitoring_stream:
-            self._monitoring_stream.stop()
-            self._monitoring_stream.close()
-            self._monitoring_stream = None
-            time.sleep(0.1)  # Give HW time to release
+        with self._stream_lock:
+            if self._monitoring_stream:
+                try:
+                    self._monitoring_stream.stop()
+                    self._monitoring_stream.close()
+                    logger.debug("Monitoring stream released.")
+                except Exception as e:
+                    logger.warning(f"Error releasing monitoring stream: {e}")
+                finally:
+                    self._monitoring_stream = None
+                    time.sleep(0.15) # Buffer for WDM-KS driver release
         self._current_level = 0.0
 
     def get_input_level(self) -> float:
-        """Return the current input level (0.0 to 1.0)."""
         return self._current_level
 
-    def _check_device_support(self, device_id: int, stream_type: str = 'input') -> bool:
-        """Verify if the device supports current settings (Sample Rate/Channels)."""
-        try:
-            if stream_type == 'input':
-                sd.check_input_settings(device=device_id, samplerate=self._sample_rate, channels=self._channels)
-            else:
-                sd.check_output_settings(device=device_id, samplerate=self._sample_rate, channels=self._channels)
-            return True
-        except Exception as e:
-            logger.warning(f"Device {device_id} check failed for {stream_type}: {e}")
-            return False
-
     def start_monitoring(self, device_id: Optional[int] = None):
-        """Start monitoring input levels with aggressive compatibility scanning."""
+        """Start monitoring input levels (Oscilloscope + RMS)."""
         self.stop_monitoring()
         target_device = device_id if device_id is not None else self.input_device
-        
         if target_device is None: return
 
         def callback(indata, frames, time, status):
             if status: return
-            
-            # Update scope buffer
             data = indata[:, 0] if indata.ndim > 1 else indata
+            # Update scope
             shift = len(data)
             if shift < self._scope_buffer_size:
                 self._scope_buffer = np.roll(self._scope_buffer, -shift)
                 self._scope_buffer[-shift:] = data
             else:
                 self._scope_buffer = data[-self._scope_buffer_size:]
-
-            # Calculate RMS level
+            # Level
             rms = np.sqrt(np.mean(indata**2))
             self._current_level = float(np.clip(rms * 5.0, 0, 1))
 
         success, sr, ch = self._scan_and_open_stream(target_device, callback)
-        
         if success:
             self._monitoring_stream = self._stream
-            self._stream = None # Move to monitoring slot
+            self._stream = None
             self._is_monitoring = True
-            self._active_sr = sr # Save for recording
+            self._active_sr = sr
             self._active_channels = ch
-        else:
-            self._current_level = 0.0
 
     def get_scope_data(self) -> np.ndarray:
-        """Return the current oscilloscope buffer."""
         return self._scope_buffer
 
     def _scan_and_open_stream(self, device_id: int, callback: Callable) -> tuple[bool, int, int]:
-        """Core logic to find a working SR/Channel combo for a device."""
+        """Core logic to find working audio settings, prioritizing user configuration."""
         try:
             info = sd.query_devices(device_id)
             native_sr = int(info['default_samplerate'])
             max_in = info['max_input_channels']
         except Exception as e:
-            logger.error(f"Device error {device_id}: {e}")
+            logger.error(f"Hardware scan error: {e}")
             return False, 0, 0
 
-        sample_rates = sorted(list(set([native_sr, self._sample_rate, 48000, 44100])), reverse=True)
+        # Preference: 1. User config, 2. Native hardware, 3. Standard rates
+        sample_rates = []
+        if self._active_sr: sample_rates.append(self._active_sr)
+        if native_sr not in sample_rates: sample_rates.append(native_sr)
+        for sr in [44100, 48000]:
+            if sr not in sample_rates: sample_rates.append(sr)
+
         channel_configs = [self._channels]
         if max_in >= 2: channel_configs.append(2)
 
@@ -359,173 +396,179 @@ class AudioEngine:
             for ch in channel_configs:
                 try:
                     stream = sd.InputStream(
-                        samplerate=sr,
-                        channels=ch,
-                        device=device_id,
-                        callback=callback
+                        samplerate=sr, channels=ch, device=device_id, callback=callback
                     )
                     stream.start()
                     self._stream = stream
-                    logger.info(f"Stream Open: Dev {device_id} | {sr}Hz | {ch}ch")
+                    logger.info(f"Monitor Stream Ready: {sr}Hz | {ch}ch")
                     return True, sr, ch
-                except Exception:
-                    continue
-        
+                except: continue
         return False, 0, 0
 
     def _regenerate_clicks(self):
-        """Regenerate click samples at the specific active sample rate."""
+        """Align metronome clicks with currently active hardware sample rate."""
         sr = self._active_sr if self._active_sr else self._sample_rate
-        self._click_sample = self._generate_click_at_sr(1000, 0.05, 0.2, sr)
-        self._click_accent = self._generate_click_at_sr(1500, 0.05, 0.3, sr)
-        logger.debug(f"Clicks regenerated for {sr}Hz")
-
-    def _generate_click_at_sr(self, freq: float, duration: float, volume: float, sr: int) -> np.ndarray:
-        """Generate a click sample at specified sample rate."""
-        t = np.linspace(0, duration, int(sr * duration), False)
-        click = np.sin(freq * t * 2 * np.pi) * volume
-        fade_out = np.linspace(1, 0, len(click))
-        return (click * fade_out).astype(np.float32)
+        old_sr = self._sample_rate
+        self._sample_rate = sr
+        self._click_sample = self._generate_professional_click(1500, 0.012, 0.25)
+        self._click_accent = self._generate_professional_click(2000, 0.012, 0.35)
+        self._click_countin = self._generate_professional_click(1000, 0.012, 0.20)
+        self._sample_rate = old_sr
 
     def play_test_sound(self, device_id: Optional[int] = None):
-        """Play test tone with fallback and safer error catching."""
         target_device = device_id if device_id is not None else self.output_device
         if target_device is None: return
-        
         try:
-            # First try default
-            sd.play(self._test_tone, self._sample_rate, device=target_device)
-        except Exception:
-            try:
-                # Try common fallback SR
-                sd.play(self._test_tone, 48000, device=target_device)
-            except Exception as e:
-                logger.error(f"Fatal Output Error: Dispositivo {target_device} no responde. {e}")
+            sd.play(self._test_tone, self._active_sr, device=target_device)
+        except Exception as e:
+            logger.error(f"Hardware test failed. Usually means device is busy: {e}")
 
     def start_recording(self):
-        """Start capturing audio into memory using pre-validated settings."""
-        if self._is_recording:
-            return
+        """Robust Full Duplex recording with aggressive hardware reset for WDM-KS stability."""
+        if self._is_recording: return
         
-        # Safety: ensure any level monitoring is off
+        logger.info("Preparing hardware for recording (Hard Reset)...")
+        # 1. STOP EVERYTHING: Monitoring, sounds, and active streams
         self.stop_monitoring()
+        try: sd.stop()
+        except: pass
+        
+        # Give Windows/WDM-KS time to actually release the kernel pins
+        time.sleep(0.3) 
         
         self._recording_data = []
         self._is_recording = True
         
-        def callback(indata, frames, time, status):
-            if status:
-                logger.warning(f"Audio status: {status}")
+        with self._click_lock:
+            self._click_to_play = None
+            self._click_ptr = 0
+
+        def duplex_callback(indata, outdata, frames, time, status):
+            if status: logger.warning(f"Audio Callback Status: {status}")
             
-            # Update scope buffer during recording too
+            # 1. INPUT: Capture and visualize
             data = indata[:, 0] if indata.ndim > 1 else indata
             shift = len(data)
             if shift < self._scope_buffer_size:
                 self._scope_buffer = np.roll(self._scope_buffer, -shift)
                 self._scope_buffer[-shift:] = data
+            else:
+                self._scope_buffer = data[-self._scope_buffer_size:]
             
             if self._is_recording:
                 self._recording_data.append(indata.copy())
 
-        if self.input_device is None:
-            raise Exception("No se ha seleccionado un dispositivo de entrada.")
+            # 2. OUTPUT: Mix metronome click
+            outdata.fill(0)
+            with self._click_lock:
+                if self._click_to_play is not None:
+                    remaining = len(self._click_to_play) - self._click_ptr
+                    to_copy = min(frames, remaining)
+                    click_chunk = self._click_to_play[self._click_ptr : self._click_ptr + to_copy]
+                    for c in range(outdata.shape[1]):
+                        outdata[:to_copy, c] = click_chunk
+                    self._click_ptr += to_copy
+                    if self._click_ptr >= len(self._click_to_play):
+                        self._click_to_play = None
+                        self._click_ptr = 0
 
-        # Try to open with the settings that worked for monitoring
+        # Try prioritized SRs for Duplex
+        sr_to_try = []
+        # Ensure unique integer sample rates
+        candidates = [self._active_sr, 44100, 48000]
         try:
-            self._stream = sd.InputStream(
-                samplerate=self._active_sr,
-                channels=self._active_channels,
-                device=self.input_device,
-                callback=callback
-            )
-            self._stream.start()
-            logger.info(f"Recording: Dev {self.input_device} @ {self._active_sr}Hz ({self._active_channels}ch)")
-        except Exception:
-            # Full scan fallback if previous settings fail now
-            success, sr, ch = self._scan_and_open_stream(self.input_device, callback)
-            if not success:
-                self._is_recording = False
-                raise Exception(f"El dispositivo {self.input_device} no responde.")
-            self._active_sr = sr
-            self._active_channels = ch
+            output_info = sd.query_devices(self.output_device, 'output')
+            candidates.insert(1, int(output_info['default_samplerate']))
+        except: pass
+
+        for s in candidates:
+            if s is not None:
+                sr_int = int(s)
+                if sr_int not in sr_to_try: sr_to_try.append(sr_int)
+
+        success = False
+        last_error = ""
+        for sr in sr_to_try:
+            # IMPORTANT: Clean up from previous failed loop attempt
+            if self._stream:
+                try: self._stream.close()
+                except: pass
+                self._stream = None
+
+            try:
+                self._stream = sd.Stream(
+                    samplerate=sr,
+                    blocksize=1024, # Explicit blocksize improves WDM-KS stability
+                    channels=(self._active_channels, 2), 
+                    device=(self.input_device, self.output_device),
+                    callback=duplex_callback
+                )
+                self._stream.start()
+                self._active_sr = sr
+                logger.info(f"Duplex Engine Active: {sr}Hz (Block: 1024)")
+                success = True
+                break
+            except Exception as e:
+                last_error = str(e)
+                # Cleanup immediate to prevent driver hang
+                if self._stream:
+                    try: self._stream.close()
+                    except: pass
+                    self._stream = None
+                logger.warning(f"Duplex attempt failed at {sr}Hz: {e}")
+                time.sleep(0.1)
+                continue
+                
+        if not success:
+            self._is_recording = False
+            # Re-enable monitor so app behaves normally after error
+            self.start_monitoring() 
+            hint = "\n\nTip: Cierra YouTube/Spotify u otras apps de audio si usas un driver WDM-KS/Exclusive."
+            raise Exception(f"Error de Hardware [-9996]: El dispositivo está ocupado o no admite modo Duplex.\n{last_error}{hint}")
 
     def stop_recording(self) -> np.ndarray:
-        """Stop capturing and return the audio data."""
-        if not self._is_recording:
-            return np.array([], dtype=np.float32)
-        
+        """Safe shutdown of the Duplex stream."""
+        if not self._is_recording: return np.array([], dtype=np.float32)
         self._is_recording = False
-        
-        # Safe stream closing
         with self._stream_lock:
             if self._stream:
-                self._is_closing = True
                 try:
                     self._stream.stop()
                     self._stream.close()
-                except Exception as e:
-                    logger.error(f"Error closing stream: {e}")
-                finally:
-                    self._stream = None
-                    self._is_closing = False
-                time.sleep(0.1)  # Give HW time to release on Windows
-            
-        if not self._recording_data:
-            return np.array([], dtype=np.float32)
-
-        # Concatenate all chunks
+                except: pass
+                finally: self._stream = None
+                time.sleep(0.1)
+        if not self._recording_data: return np.array([], dtype=np.float32)
         audio = np.concatenate(self._recording_data, axis=0)
-        
-        # Flatten for mono (N, 1) -> (N,)
-        if audio.ndim > 1 and audio.shape[1] == 1:
-            audio = audio.flatten()
-            
-        logger.info(f"Recording stopped, captured {len(audio)} samples")
-        return audio
+        return audio.flatten() if audio.ndim > 1 and audio.shape[1] == 1 else audio
 
     def save_wav(self, data: np.ndarray, filepath: str):
-        """Save numpy array as a WAV file."""
+        """Save captured audio with original hardware fidelity."""
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Ensure 16-bit PCM for UTAU compatibility
-        if data.dtype != np.int16:
-            # Convert float32 to int16
-            data = (data * 32767).astype(np.int16)
-            
-        # Validate parameters - Fallback to defaults if not set
+        # 16-bit PCM conversion
+        audio_pcm = (data * 32767).astype(np.int16) if data.dtype != np.int16 else data
         sr = self._active_sr if self._active_sr else SAMPLE_RATE
         ch = self._active_channels if self._active_channels else self._channels
-            
         with wave.open(str(filepath), 'wb') as wf:
             wf.setnchannels(ch)
-            wf.setsampwidth(2)  # 2 bytes for 16-bit
+            wf.setsampwidth(2)
             wf.setframerate(sr)
-            wf.writeframes(data.tobytes())
-            
-        logger.info(f"Saved audio: {filepath} | {sr}Hz | {ch}ch")
+            wf.writeframes(audio_pcm.tobytes())
+        logger.info(f"Audio saved: {filepath.name} ({sr}Hz)")
 
     def load_wav(self, filepath: str) -> tuple[np.ndarray, int]:
-        """Load a WAV file into a numpy array."""
         try:
             with wave.open(filepath, 'rb') as wf:
                 params = wf.getparams()
                 data = wf.readframes(params.nframes)
-                audio_int16 = np.frombuffer(data, dtype=np.int16)
-                
-                # Convert to float32 (-1.0 to 1.0) for internal use
-                audio_float32 = audio_int16.astype(np.float32) / 32767.0
-                
-                # Handle stereo if needed (take left channel)
+                audio_float = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32767.0
                 if params.nchannels > 1:
-                    audio_float32 = audio_float32.reshape(-1, params.nchannels)[:, 0]
-                    
-                logger.info(f"Loaded audio: {filepath} | {params.framerate}Hz | {params.nchannels}ch")
-                return audio_float32, params.framerate
+                    audio_float = audio_float.reshape(-1, params.nchannels)[:, 0]
+                return audio_float, params.framerate
         except Exception as e:
-            logger.error(f"Failed to load WAV {filepath}: {e}")
+            logger.error(f"Failed to load WAV: {e}")
             raise
 
     def get_devices(self):
-        """Return list of available audio devices."""
         return sd.query_devices()
