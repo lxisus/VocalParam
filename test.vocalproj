@@ -1,0 +1,49 @@
+{
+  "project_name": "TestProject",
+  "bpm": 120,
+  "reclist_path": "",
+  "output_directory": "recordings/test",
+  "recordings": [
+    {
+      "line_index": 1,
+      "filename": "ba.wav",
+      "status": "recorded",
+      "duration_ms": 2000.0,
+      "hash": "fake_hash",
+      "oto_entries": [
+        {
+          "alias": "ba",
+          "offset": 500.0,
+          "consonant": 80.0,
+          "cutoff": -100.0,
+          "preutter": 60.0,
+          "overlap": -1500.0,
+          "comment": ""
+        }
+      ]
+    },
+    {
+      "line_index": 2,
+      "filename": "ka.wav",
+      "status": "recorded",
+      "duration_ms": 2000.0,
+      "hash": "fake_hash",
+      "oto_entries": [
+        {
+          "alias": "ka",
+          "offset": 1500.0,
+          "consonant": 80.0,
+          "cutoff": -100.0,
+          "preutter": 60.0,
+          "overlap": 30.0,
+          "comment": ""
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-02-09T21:06:18.836637",
+    "last_modified": "2026-02-09T21:06:25.450226",
+    "version": "1.0.0"
+  }
+}

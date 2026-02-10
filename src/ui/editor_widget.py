@@ -111,14 +111,14 @@ class EditorWidget(QWidget):
         key = event.key()
         
         if key == Qt.Key.Key_F1:
-            self.marker_set_requested.emit('offset')
+            self.marker_set_requested.emit('left_blank')
         elif key == Qt.Key.Key_F2:
             self.marker_set_requested.emit('overlap')
         elif key == Qt.Key.Key_F3:
             self.marker_set_requested.emit('preutter')
         elif key == Qt.Key.Key_F4:
-            self.marker_set_requested.emit('consonant')
+            self.marker_set_requested.emit('fixed')
         elif key == Qt.Key.Key_F5:
-            self.marker_set_requested.emit('cutoff')
+            self.marker_set_requested.emit('right_blank')
         else:
             super().keyPressEvent(event)

@@ -44,11 +44,11 @@ class ParameterTableWidget(QTableWidget):
         """Configure table structure."""
         columns = [
             "Alias", 
-            "L. Blank (Offset)", 
+            "Left Blank", 
             "Overlap", 
             "Pre-Utterance", 
-            "Fixed (Consonant)", 
-            "R. Blank (Cutoff)",
+            "Fixed", 
+            "Right Blank",
             "Comment",
             "Filename"
         ]

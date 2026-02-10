@@ -60,11 +60,11 @@ class WaveformCanvas(pg.GraphicsLayoutWidget):
         # 4. OTO Markers
         self.markers: Dict[str, pg.InfiniteLine] = {}
         marker_config = {
-            'offset': (COLORS['offset'], 'Offset'),
+            'offset': (COLORS['offset'], 'Left Blank'),
             'overlap': (COLORS['overlap'], 'Overlap'),
             'preutter': (COLORS['preutter'], 'Preutter'),
-            'consonant': (COLORS['consonant'], 'Consonant'),
-            'cutoff': (COLORS['cutoff'], 'Cutoff')
+            'consonant': (COLORS['consonant'], 'Fixed'),
+            'cutoff': (COLORS['cutoff'], 'Right Blank')
         }
         
         for name, (color, label) in marker_config.items():

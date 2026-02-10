@@ -188,8 +188,9 @@ class MainWindow(QMainWindow):
                      self._on_new_project()
              
              # 2. Update Project (if it was created or already existed)
+             recording = None
              if self._current_project:
-                 self._update_project_recording(self._current_line, audio_data)
+                 recording = self._update_project_recording(self._current_line, audio_data)
              
              # 2. Generate Initial OTO
              # Use the first segment as the alias for now (prototype limitation)
@@ -203,6 +204,21 @@ class MainWindow(QMainWindow):
                  count_in_beats=self.recorder_widget.COUNT_IN_BEATS
              )
              
+             # Link entry to recording for persistence
+             if recording:
+                 # Check if this alias already exists in this recording
+                 existing_entry = next((e for e in recording.oto_entries if e.alias == entry.alias), None)
+                 if existing_entry:
+                     # Update existing
+                     existing_entry.offset = entry.offset
+                     existing_entry.consonant = entry.consonant
+                     existing_entry.cutoff = entry.cutoff
+                     existing_entry.preutter = entry.preutter
+                     existing_entry.overlap = entry.overlap
+                     entry = existing_entry # Use the reference in the project
+                 else:
+                     recording.oto_entries.append(entry)
+             
              # 3. Load into Editor
              self.editor_controller.load_entry(
                  entry, 
@@ -212,7 +228,11 @@ class MainWindow(QMainWindow):
              
              # 4. Switch View
              self.content_stack.setCurrentIndex(2) # Show Editor Container
-             self.statusbar.showMessage("Grabación analizada. Listos para editar.", 3000)
+             
+             # Refresh the GLOBAL table to show all recorded samples
+             self._on_goto_editor() 
+             
+             self.statusbar.showMessage(f"Grabación '{alias}' lista para editar.", 3000)
 
     def _on_goto_editor(self):
         """Switch to editor view manually."""
@@ -298,8 +318,10 @@ class MainWindow(QMainWindow):
                 self.reclist_widget.set_line_status(line.index, RecordingStatus.RECORDED)
                     
                 logger.info(f"Project updated with recording: {wav_name} (Hash: {file_hash[:8]}...)")
+                return existing or new_rec
         except Exception as e:
             logger.error(f"Failed to update project recording: {e}")
+        return None
     
     def _setup_menu(self):
         """Setup menu bar."""

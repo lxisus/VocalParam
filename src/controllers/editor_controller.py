@@ -65,10 +65,10 @@ class EditorController(QObject):
         # Markers in Canvas are usually in ABSOLUTE ms from start of file.
         # OTO Parameters (except Offset) are RELATIVE to Offset (or absolute if positive cutoff).
         
-        if param_name == 'offset':
+        if param_name == 'left_blank' or param_name == 'offset':
             # Offset is absolute
             self.current_entry.offset = value_ms
-        elif param_name == 'cutoff':
+        elif param_name == 'right_blank' or param_name == 'cutoff':
             if self.current_entry.cutoff < 0:
                 # Value is negative from end
                 duration_ms = self.editor.canvas.duration_s * 1000.0
@@ -76,9 +76,11 @@ class EditorController(QObject):
             else:
                 # Positive cutoff is relative to Offset
                 self.current_entry.cutoff = value_ms - self.current_entry.offset
-        elif param_name in ['overlap', 'preutter', 'consonant']:
+        elif param_name in ['overlap', 'preutter', 'fixed', 'consonant']:
+            # Fixed/Consonant mapping
+            actual_param = 'consonant' if param_name == 'fixed' else param_name
             # These are RELATIVE to Offset
-            setattr(self.current_entry, param_name, value_ms - self.current_entry.offset)
+            setattr(self.current_entry, actual_param, value_ms - self.current_entry.offset)
             
         # Update Table
         self.table.update_entry(self.current_entry)
