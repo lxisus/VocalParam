@@ -46,6 +46,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 pytest_debug.log
+logs_verificacion_audio.txt
 
 # Translations
 *.mo
