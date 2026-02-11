@@ -232,10 +232,26 @@ class AudioSettingsDialog(QDialog):
             self.level_meter.setStyleSheet(f"QProgressBar::chunk {{ background-color: {COLORS['success']}; }}")
 
     def _on_test_sound(self):
-        """Play test tone on current output choice."""
+        """Play test tone on current output choice with hardware reset."""
         out_data = self.output_combo.currentData()
         if out_data:
+            # Disable button to prevent spamming while hardware releases
+            self.test_btn.setEnabled(False)
+            
+            # Pause UI and Monitoring
+            self.level_timer.stop()
             self.engine.play_test_sound(out_data['index'])
+            
+            # Re-start monitoring after a delay
+            # 1800ms ensures the test tone (500ms) + flush + cool-down are done
+            QTimer.singleShot(1800, self._resume_monitoring)
+
+    def _resume_monitoring(self):
+        """Resume monitoring after hardware-exclusive operation."""
+        self.test_btn.setEnabled(True)
+        if self.isVisible():
+            self._restart_monitoring()
+            self.level_timer.start(50)
 
     def _smart_select_output(self, target_name):
         terms = ["BEHRINGER", "REALTEK", "USB", "UMC", "FOCUSRITE"]

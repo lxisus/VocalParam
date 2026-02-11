@@ -275,9 +275,9 @@ class RecorderWidget(QWidget):
         
         self.scope_timer = QTimer()
         self.scope_timer.timeout.connect(self._update_scope)
-        # Slower updates for UI to prevent metronome jitter (trabado sound)
-        self.progress_interval = 100 # ms
-        self.scope_interval = 60 # ms
+        # High-frequency updates for 60 FPS smoothness
+        self.progress_interval = 16 
+        self.scope_interval = 16
     
     def set_line(self, line: PhoneticLine):
         """Set the current line to record.
@@ -361,6 +361,14 @@ class RecorderWidget(QWidget):
         self.progress_timer.start(self.progress_interval)
         self.scope_timer.start(self.scope_interval)
         
+        # Prepare WaveformScope for fixed timeline
+        self.wave_scope.set_mode('fixed', self._target_duration_ms)
+        self.wave_scope.setup_mora_regions(
+            self._bpm, 
+            len(self._current_line.segments), 
+            self.COUNT_IN_BEATS
+        )
+        
         # Play first count-in click immediately
         self._play_count_in()
         
@@ -384,6 +392,7 @@ class RecorderWidget(QWidget):
         self.time_label.setText("0.0s / 0.0s")
         self.listen_btn.setEnabled(False)
         self._last_audio = None
+        self.wave_scope.set_mode('scrolling')
         self.wave_scope.clear()
         
         for box in self.mora_boxes:
@@ -456,21 +465,36 @@ class RecorderWidget(QWidget):
     
     def _update_scope(self):
         """Update the scrolling waveform plot (DSP)."""
-        data = self.engine.get_scope_data()
-        self.wave_scope.update_data(data)
+        if self._is_recording:
+            # During recording, if in fixed mode, we don't necessarily update the data 
+            # unless we implement a real-time waveform builder.
+            # For now, we'll keep it simple and just update the playhead.
+            # But we could optionally keep scrolling the scope if wanted.
+            pass
+        else:
+            data = self.engine.get_scope_data()
+            self.wave_scope.update_data(data)
     
     def _update_progress(self):
-        """Update progress bar and time display."""
-        if not self._is_recording:
+        """Update progress bar, time display and playhead."""
+        if not self._is_recording and not self.engine.is_playing():
+            if not self.engine.is_playing() and self.progress_timer.isActive():
+                self.progress_timer.stop()
             return
         
-        # Real-time sync (M5.2)
-        elapsed_real = (time.time() - self._start_time) * 1000
-        self._elapsed_ms = int(elapsed_real)
+        if self._is_recording:
+            # Real-time sync during recording
+            elapsed_real = (time.time() - self._start_time) * 1000
+            self._elapsed_ms = int(elapsed_real)
+        else:
+            # Sync with playback engine
+            self._elapsed_ms = int(self.engine.get_playback_progress())
+            
         self.progress_bar.setValue(self._elapsed_ms)
+        self.wave_scope.set_playhead(self._elapsed_ms)
         
         elapsed_s = self._elapsed_ms / 1000
-        total_s = self._target_duration_ms / 1000
+        total_s = self._target_duration_ms / 1000 if self._is_recording else (len(self._last_audio) / self.engine._active_sr if self._last_audio is not None else 0)
         
         self.time_label.setText(f"{elapsed_s:.1f}s / {total_s:.1f}s")
     
@@ -516,9 +540,25 @@ class RecorderWidget(QWidget):
             logger.info(f"Destination path changed to: {folder}")
 
     def _on_listen_clicked(self):
-        """Play back the last recorded audio."""
+        """Play back the last recorded audio with visual sync."""
         if self._last_audio is not None:
+            # Prepare UI for playback
+            duration_ms = (len(self._last_audio) / self.engine._active_sr) * 1000
+            self.progress_bar.setMaximum(int(duration_ms))
+            
+            self.wave_scope.set_mode('fixed', duration_ms)
+            self.wave_scope.set_waveform(self._last_audio, self.engine._active_sr)
+            # Re-draw regions for playback (no count-in offset here because we play recorded audio only)
+            # BUT the recorded audio INCLUDES the count-in silence! 
+            # So we keep the same region setup.
+            self.wave_scope.setup_mora_regions(
+                self._bpm, 
+                len(self._current_line.segments), 
+                self.COUNT_IN_BEATS
+            )
+            
             self.engine.play_audio(self._last_audio)
+            self.progress_timer.start(50) # Faster updates for smooth playhead
         else:
             logger.warning("No audio to play")
 

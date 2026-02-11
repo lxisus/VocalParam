@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import Qt
 import pyqtgraph as pg
 import numpy as np
-from utils.constants import COLORS
+from utils.constants import COLORS, ms_per_beat
 
 class WaveformScope(QWidget):
     """
@@ -18,13 +18,18 @@ class WaveformScope(QWidget):
     - Dual-channel waveform rendering (positive/negative)
     - Min-max envelope for accurate representation
     - Gradient fill and anti-aliased lines
-    - Circular buffer for O(1) updates
-    - Performance-optimized for real-time display
+    - Circular buffer for O(1) updates (scrolling mode)
+    - Fixed timeline mode for linear recording/playback
+    - Synchronized playhead (Timeline Guide)
+    - Integrated Timeline Ruler
+    - Mora illumination regions
     """
     
     def __init__(self, buffer_size=2000, parent=None):
         super().__init__(parent)
         self._buffer_size = buffer_size
+        self._mode = 'scrolling'  # 'scrolling' or 'fixed'
+        self._duration_ms = 0
         
         # Dual buffers for min-max envelope rendering
         self._data_max = np.zeros(buffer_size)
@@ -41,8 +46,14 @@ class WaveformScope(QWidget):
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground('#1A1A1A')
         self.plot_widget.setYRange(-1.2, 1.2)
-        self.plot_widget.hideAxis('bottom')
+        
+        # Configure Axis (Ruler)
+        self.plot_widget.showAxis('bottom')
         self.plot_widget.hideAxis('left')
+        bottom_axis = self.plot_widget.getAxis('bottom')
+        bottom_axis.setPen(pg.mkPen(COLORS['text_secondary']))
+        bottom_axis.setLabel('Tiempo (s)')
+        
         self.plot_widget.setMouseEnabled(x=False, y=False)
         self.plot_widget.getPlotItem().hideButtons()
         
@@ -65,6 +76,33 @@ class WaveformScope(QWidget):
             fillLevel=0,
             brush=pg.mkBrush(0, 255, 100, 40)
         )
+        
+        # Timeline Guide (Playhead)
+        self.playhead = pg.InfiniteLine(
+            pos=0, 
+            angle=90, 
+            pen=pg.mkPen('#FFFFFF', width=2),
+            movable=False
+        )
+        self.plot_widget.addItem(self.playhead)
+        self.playhead.hide()
+        
+        # Mora Highlight (Moving Spotlight)
+        self.active_region = pg.LinearRegionItem(
+            [0, 0], 
+            movable=False, 
+            brush=pg.mkBrush(255, 85, 85, 80),
+            pen=pg.mkPen(None)
+        )
+        # Remove lines and hover effects that cause trails
+        for line in self.active_region.lines:
+            line.setPen(pg.mkPen(None))
+            line.setHoverPen(pg.mkPen(None))
+        self.plot_widget.addItem(self.active_region)
+        self.active_region.hide()
+        
+        # Static Background Regions (Container)
+        self.static_regions = []
         
         # X-axis data (time indices)
         self._x_data = np.arange(self._buffer_size)
@@ -149,9 +187,133 @@ class WaveformScope(QWidget):
             brush=pg.mkBrush(*brush_color)
         )
         
+    def set_mode(self, mode: str, duration_ms: float = 0):
+        """
+        Switch between 'scrolling' and 'fixed' modes.
+        
+        Args:
+            mode: 'scrolling' (oscilloscope) or 'fixed' (linear timeline)
+            duration_ms: Total duration for 'fixed' mode
+        """
+        self._mode = mode
+        self._duration_ms = duration_ms
+        
+        if mode == 'fixed':
+            self.plot_widget.setXRange(0, duration_ms / 1000)
+            self.playhead.show()
+            self.playhead.setPos(0)
+            self.active_region.show()
+            # Hide curves and clear their data to prevent any residual 'trail'
+            self.curve_max.setData([], [])
+            self.curve_min.setData([], [])
+            self.curve_max.hide()
+            self.curve_min.hide()
+        else:
+            self.plot_widget.setXRange(0, self._buffer_size)
+            self.playhead.hide()
+            self.active_region.hide()
+            self._data_max.fill(0)
+            self._data_min.fill(0)
+            self.curve_max.setData(self._x_data, self._data_max) 
+            self.curve_min.setData(self._x_data, self._data_min)
+            self.curve_max.show()
+            self.curve_min.show()
+            self._clear_regions()
+
+    def set_playhead(self, time_ms: float):
+        """Update the Timeline Guide position and Mora spotlight."""
+        if self._mode == 'fixed':
+            time_s = time_ms / 1000
+            self.playhead.setPos(time_s)
+            
+            # Find which static region we are in and move the spotlight
+            for region_data in self.static_regions:
+                start, end = region_data['range']
+                if start <= time_s <= end:
+                    # Only update if the spotlight actually needs to move
+                    current_start, current_end = self.active_region.getRegion()
+                    if current_start != start or current_end != end:
+                        self.active_region.setRegion([start, end])
+                    break
+
+    def setup_mora_regions(self, bpm: int, num_moras: int, count_in_beats: int):
+        """Create visual static regions and prepare spotlight."""
+        self._clear_regions()
+        beat_ms = ms_per_beat(bpm)
+        
+        # Total beats to show
+        total_beats = count_in_beats + num_moras
+        for i in range(total_beats):
+            start = (i * beat_ms) / 1000
+            end = (i + 1) * beat_ms / 1000
+            
+            # Use a single static background item (efficiency)
+            # Instead of LinearRegionItem for static ones, we use simpler items if possible
+            # but for now, we'll use non-movable LinearRegions with very low alpha
+            brush = pg.mkBrush(150, 150, 150, 15) if i < count_in_beats else pg.mkBrush(255, 255, 255, 10)
+            
+            region = pg.LinearRegionItem(
+                [start, end], 
+                movable=False, 
+                brush=brush,
+                pen=pg.mkPen(None)
+            )
+            for line in region.lines:
+                line.setPen(pg.mkPen(None))
+                
+            self.plot_widget.addItem(region)
+            self.static_regions.append({'item': region, 'range': (start, end)})
+            
+        # Reset spotlight
+        self.active_region.setRegion([0, beat_ms/1000 if total_beats > 0 else 0])
+
+    def _clear_regions(self):
+        """Remove all static mora regions from the plot."""
+        for rd in self.static_regions:
+            try:
+                self.plot_widget.removeItem(rd['item'])
+            except: pass
+        self.static_regions = []
+        self.active_region.setRegion([0, 0])
+        self.active_region.hide()
+
+    def set_waveform(self, audio_data: np.ndarray, sr: int):
+        """Set a static waveform for fixed duration mode (playback)."""
+        if len(audio_data) == 0:
+            return
+            
+        # Compute envelope for visualization
+        # We'll use a fixed number of samples to represent the waveform
+        num_points = 2000
+        step = max(1, len(audio_data) // num_points)
+        
+        max_vals = []
+        min_vals = []
+        x_vals = []
+        
+        for i in range(0, len(audio_data), step):
+            segment = audio_data[i:i+step]
+            if len(segment) > 0:
+                max_vals.append(np.max(segment))
+                min_vals.append(np.min(segment))
+                x_vals.append(i / sr)
+        
+        # Apply boost
+        max_vals = np.clip(np.array(max_vals) * 2.0, -1.2, 1.2)
+        min_vals = np.clip(np.array(min_vals) * 2.0, -1.2, 1.2)
+        x_vals = np.array(x_vals)
+        
+        self.curve_max.setData(x_vals, max_vals)
+        self.curve_min.setData(x_vals, min_vals)
+        self.curve_max.show()
+        self.curve_min.show()
+
     def clear(self):
         """Reset the waveform to silence."""
         self._data_max.fill(0)
         self._data_min.fill(0)
         self.curve_max.setData(self._x_data, self._data_max)
         self.curve_min.setData(self._x_data, self._data_min)
+        if self._mode == 'fixed':
+            self.playhead.setPos(0)
+            self._clear_regions()

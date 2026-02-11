@@ -30,6 +30,9 @@ class AudioEngine:
         self._recording_data = []
         self._input_stream: Optional[sd.InputStream] = None
         self._output_stream: Optional[sd.OutputStream] = None
+        self._playback_stream: Optional[sd.OutputStream] = None
+        self._stream: Optional[sd.Stream] = None  # Duplex stream for recording
+        self._last_error_time = 0
         
         # Device configuration
         self.input_device: Optional[int] = None
@@ -60,6 +63,13 @@ class AudioEngine:
         self._click_to_play: Optional[np.ndarray] = None
         self._click_ptr = 0
         self._click_lock = threading.Lock()
+        
+        # Playback and Flush control
+        self._playback_data = None
+        self._playback_ptr = 0
+        self._is_playing = False
+        self._flush_remaining = 0
+        self.FLUSH_BLOCKS = 4 # Blocks of silence before closing stream
         
         # Database for config
         self.db = AppDatabase()
@@ -285,8 +295,69 @@ class AudioEngine:
         pass
 
     def stop_output_stream(self):
-        """Legacy method stub."""
-        pass
+        """Stop any active output, including playback and metronome."""
+        self._release_all_streams()
+
+    def _release_all_streams(self):
+        """Exclusive access protocol: Force shutdown of all active streams with safety delays."""
+        logger.info("Initiating exclusive hardware access protocol...")
+        
+        # 1. Stop monitoring
+        self._is_monitoring = False
+        with self._stream_lock:
+            if self._monitoring_stream:
+                try:
+                    self._monitoring_stream.stop()
+                    self._monitoring_stream.close()
+                except: pass
+                self._monitoring_stream = None
+
+        # 2. Stop playback
+        # IMPORTANT: Setting _is_playing to False first to prevent callback interference
+        self._is_playing = False
+        if self._playback_stream:
+            try:
+                logger.debug("Closing playback stream...")
+                self._playback_stream.stop()
+                self._playback_stream.close()
+            except Exception as e:
+                logger.debug(f"Error closing playback stream: {e}")
+            finally:
+                self._playback_stream = None
+
+        # 3. Stop duplex/recording
+        self._is_recording = False
+        if self._stream:
+            try:
+                logger.debug("Closing duplex stream...")
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                logger.debug(f"Error closing duplex stream: {e}")
+            finally:
+                self._stream = None
+
+        # 4. Global PortAudio stop (Aggressive cleanup)
+        try:
+            sd.stop()
+        except: pass
+
+        # 5. Critical cool-down
+        # Some WDM-KS drivers require significant time to release kernel pins
+        time.sleep(0.6) 
+        logger.info("_release_all_streams: Hardware released and cooled down.")
+
+    def _hard_reset_portaudio(self):
+        """Total re-initialization of the PortAudio library. Last resort for -9996."""
+        logger.warning("Executing HARD RESET of PortAudio library...")
+        try:
+            sd._terminate()
+            time.sleep(0.5)
+            sd._initialize()
+            self.load_config()
+            logger.info("PortAudio re-initialized successfully.")
+        except Exception as e:
+            logger.error(f"PortAudio hard reset failed: {e}")
 
     def play_click(self, accent: bool = False, countin: bool = False):
         """Arm a click sound to be played with sample-level precision in the duplex callback.
@@ -300,42 +371,101 @@ class AudioEngine:
             self._click_to_play = sample
             self._click_ptr = 0
             
-        # Preview Fallback: If the duplex stream isn't active, play directly
+        # Preview Fallback: If not recording, use the robust playback system
         if not self._is_recording:
-            try:
-                # Use a new thread for non-blocking preview to avoid UI freeze
-                sd.play(sample, self._active_sr, device=self.output_device, blocking=False)
-            except Exception as e:
-                logger.warning(f"Metronome preview failed (Device likely busy by another app): {e}")
+            self.play_audio(sample)
 
     def play_audio(self, data: np.ndarray):
-        """Play back audio buffer with robust device handling."""
+        """Play back audio buffer with robust device handling and progress tracking."""
         if data is None or len(data) == 0: return
+        
+        self.stop_audio()
+        
+        self._playback_data = data.flatten()
+        self._playback_ptr = 0
+        self._is_playing = True
+        
+        def playback_callback(outdata, frames, time, status):
+            if status: logger.warning(f"Playback Callback Status: {status}")
+            
+            remaining = len(self._playback_data) - self._playback_ptr
+            to_copy = min(frames, remaining)
+            
+            if to_copy > 0:
+                chunk = self._playback_data[self._playback_ptr : self._playback_ptr + to_copy]
+                if outdata.shape[1] > 1:
+                    for c in range(outdata.shape[1]):
+                        outdata[:to_copy, c] = chunk
+                else:
+                    outdata[:to_copy, 0] = chunk
+                self._playback_ptr += to_copy
+                
+                # If we just reached the end, start the flush countdown
+                if to_copy < frames:
+                    outdata[to_copy:, :] = 0
+                    self._flush_remaining = self.FLUSH_BLOCKS
+            else:
+                # Provide silence for N blocks before raising CallbackStop
+                outdata.fill(0)
+                if self._flush_remaining > 0:
+                    self._flush_remaining -= 1
+                else:
+                    self._is_playing = False
+                    raise sd.CallbackStop
+
         try:
             sr = self._active_sr if self._active_sr else SAMPLE_RATE
-            sd.play(data, sr, device=self.output_device)
+            ch = 2 
+            
+            # Ensure index is absolutely correct by re-querying if needed
+            try:
+                sd.query_devices(self.output_device, 'output')
+            except:
+                logger.warning("Output device lost index. Refreshing...")
+                self.load_config()
+            
+            self._playback_stream = sd.OutputStream(
+                samplerate=sr,
+                device=self.output_device,
+                channels=ch,
+                callback=playback_callback,
+                finished_callback=self._on_playback_finished
+            )
+            self._playback_stream.start()
+            logger.info(f"Playback started: {len(data)} samples at {sr}Hz")
         except Exception as e:
-            logger.error(f"Playback failed. Check if another app (YouTube/Spotify) is using the device in Exclusive Mode: {e}")
+            self._is_playing = False
+            err_msg = str(e)
+            logger.error(f"Playback failed: {err_msg}")
+            
+            # Handle WDM-KS volatility (-9996)
+            if "-9996" in err_msg or "Invalid device" in err_msg:
+                if time.time() - self._last_error_time > 2.0:
+                    self._last_error_time = time.time()
+                    self._hard_reset_portaudio()
+                    # Optional: self.play_audio(data)
+
+    def _on_playback_finished(self):
+        """Called when stream stops. DO NOT nullify here - let _release_all_streams handle it."""
+        self._is_playing = False
+        logger.debug("Playback stream finished normally.")
+
+    def get_playback_progress(self) -> float:
+        """Get current playback progress in milliseconds."""
+        if not self._is_playing: return 0.0
+        sr = self._active_sr if self._active_sr else SAMPLE_RATE
+        return (self._playback_ptr / sr) * 1000.0
+
+    def is_playing(self) -> bool:
+        return self._is_playing
 
     def stop_audio(self):
-        """Stop any current playback."""
-        try: sd.stop()
-        except: pass
+        """Stop any current playback or sounds immediately with hardware reset."""
+        self._release_all_streams()
 
     def stop_monitoring(self):
         """Stop input level monitoring and release device synchronously."""
-        self._is_monitoring = False
-        with self._stream_lock:
-            if self._monitoring_stream:
-                try:
-                    self._monitoring_stream.stop()
-                    self._monitoring_stream.close()
-                    logger.debug("Monitoring stream released.")
-                except Exception as e:
-                    logger.warning(f"Error releasing monitoring stream: {e}")
-                finally:
-                    self._monitoring_stream = None
-                    time.sleep(0.15) # Buffer for WDM-KS driver release
+        self._release_all_streams()
         self._current_level = 0.0
 
     def get_input_level(self) -> float:
@@ -368,6 +498,16 @@ class AudioEngine:
             self._is_monitoring = True
             self._active_sr = sr
             self._active_channels = ch
+        else:
+            logger.warning(f"Monitoring start failed on device {target_device}. Attempting hard reset...")
+            self._hard_reset_portaudio()
+            # Retry once after hard reset
+            success, sr, ch = self._scan_and_open_stream(target_device, callback)
+            if success:
+                self._monitoring_stream = self._stream
+                self._stream = None
+                self._is_monitoring = True
+                logger.info("Monitoring recovered after hard reset.")
 
     def get_scope_data(self) -> np.ndarray:
         return self._scope_buffer
@@ -419,22 +559,20 @@ class AudioEngine:
         target_device = device_id if device_id is not None else self.output_device
         if target_device is None: return
         try:
-            sd.play(self._test_tone, self._active_sr, device=target_device)
+            # Set target device temporarily or ensure play_audio uses it
+            old_device = self.output_device
+            self.output_device = target_device
+            self.play_audio(self._test_tone)
+            self.output_device = old_device
         except Exception as e:
-            logger.error(f"Hardware test failed. Usually means device is busy: {e}")
+            logger.error(f"Hardware test failed: {e}")
 
     def start_recording(self):
-        """Robust Full Duplex recording with aggressive hardware reset for WDM-KS stability."""
+        """Robust Full Duplex recording with exclusive hardware protocol."""
         if self._is_recording: return
         
-        logger.info("Preparing hardware for recording (Hard Reset)...")
-        # 1. STOP EVERYTHING: Monitoring, sounds, and active streams
-        self.stop_monitoring()
-        try: sd.stop()
-        except: pass
-        
-        # Give Windows/WDM-KS time to actually release the kernel pins
-        time.sleep(0.3) 
+        # 1. Force release of all other activities
+        self._release_all_streams()
         
         self._recording_data = []
         self._is_recording = True
@@ -527,20 +665,19 @@ class AudioEngine:
             raise Exception(f"Error de Hardware [-9996]: El dispositivo está ocupado o no admite modo Duplex.\n{last_error}{hint}")
 
     def stop_recording(self) -> np.ndarray:
-        """Safe shutdown of the Duplex stream."""
+        """Safe shutdown of the Duplex stream with hardware reset."""
         if not self._is_recording: return np.array([], dtype=np.float32)
+        
+        # Capture data before releasing streams
+        audio = np.array([], dtype=np.float32)
+        if self._recording_data:
+            audio_raw = np.concatenate(self._recording_data, axis=0)
+            audio = audio_raw.flatten() if audio_raw.ndim > 1 and audio_raw.shape[1] == 1 else audio_raw
+            
+        self._release_all_streams()
         self._is_recording = False
-        with self._stream_lock:
-            if self._stream:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                except: pass
-                finally: self._stream = None
-                time.sleep(0.1)
-        if not self._recording_data: return np.array([], dtype=np.float32)
-        audio = np.concatenate(self._recording_data, axis=0)
-        return audio.flatten() if audio.ndim > 1 and audio.shape[1] == 1 else audio
+        
+        return audio
 
     def save_wav(self, data: np.ndarray, filepath: str):
         """Save captured audio with original hardware fidelity."""
